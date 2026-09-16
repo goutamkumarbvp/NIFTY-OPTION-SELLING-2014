@@ -1,0 +1,2 @@
+extracted_app/*
+!extracted_app/self_repair.py
