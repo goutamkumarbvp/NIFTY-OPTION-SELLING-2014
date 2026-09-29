@@ -55,6 +55,5 @@ async def guardian_policy(body: PolicyBody, request: Request, user: dict = Depen
     v = body.auto_apply.strip().lower()
     if v not in {"none", "low", "medium", "all"}:
         raise ValueError("AUTO_APPLY_MUST_BE none|low|medium|all")
-    t.guardian.auto_apply = v
-    t.audit.record("GUARDIAN_POLICY", {"auto_apply": v}, user["username"])
-    return ok({"auto_apply": v})
+    res = await t.governance.submit("guardian_policy", {"auto_apply": v}, user["username"])
+    return ok({"auto_apply": t.guardian.auto_apply, "pending_approval": None if res["applied"] else res["request"]})

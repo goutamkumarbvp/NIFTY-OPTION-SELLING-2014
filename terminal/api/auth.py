@@ -25,11 +25,25 @@ class AuthManager:
         self.sessions: Dict[str, dict] = {}
         self.users = {u["username"]: u for u in settings.user_table()}
         self.open_access = settings.is_loopback and not settings.api_auth_token and not self.users
+        self.failures: Dict[str, list] = {}
+        self.lockout_attempts = int(getattr(settings, "login_lockout_attempts", 5))
+        self.lockout_seconds = float(getattr(settings, "login_lockout_minutes", 15)) * 60
+        self.session_ttl = float(getattr(settings, "session_ttl_hours", 12)) * 3600
+
+    def locked(self, username: str) -> bool:
+        now = time.time()
+        recent = [ts for ts in self.failures.get(username, []) if now - ts <= self.lockout_seconds]
+        self.failures[username] = recent
+        return len(recent) >= self.lockout_attempts
 
     def login(self, username: str, password: str) -> dict | None:
+        if self.locked(username):
+            return None
         u = self.users.get(username)
         if u is None or not hmac.compare_digest(u["password"], password):
+            self.failures.setdefault(username, []).append(time.time())
             return None
+        self.failures.pop(username, None)
         token = secrets.token_urlsafe(32)
         self.sessions[token] = {"username": username, "role": u["role"], "created": time.time()}
         return {"token": token, "username": username, "role": u["role"]}
@@ -43,7 +57,7 @@ class AuthManager:
                 return {"username": "api-token", "role": "admin"}
             sess = self.sessions.get(token)
             if sess:
-                if time.time() - sess["created"] > 12 * 3600:
+                if time.time() - sess["created"] > self.session_ttl:
                     self.sessions.pop(token, None)
                     return None
                 return sess
@@ -52,7 +66,8 @@ class AuthManager:
         return None
 
     def describe(self) -> dict:
-        return {"open_access": self.open_access, "users_configured": len(self.users), "token_configured": bool(self.s.api_auth_token)}
+        return {"open_access": self.open_access, "users_configured": len(self.users), "token_configured": bool(self.s.api_auth_token), "session_ttl_hours": self.session_ttl / 3600,
+                "lockout": {"attempts": self.lockout_attempts, "minutes": self.lockout_seconds / 60, "locked_users": [u for u in self.failures if self.locked(u)]}}
 
 
 def _extract(request: Request) -> str | None:

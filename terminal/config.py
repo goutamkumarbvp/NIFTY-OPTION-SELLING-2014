@@ -110,6 +110,23 @@ class Settings(BaseSettings):
     decision_score_minutes: int = Field(30, alias="DECISION_SCORE_MINUTES")  # horizon for council evaluation
 
     # --- notifications -----------------------------------------------------
+    # --- institutional controls ----------------------------------------------
+    dq_max_underlying_jump_pct: float = Field(8.0, alias="DQ_MAX_UNDERLYING_JUMP_PCT")   # tick outlier gate (held until confirmed)
+    dq_max_option_jump_pct: float = Field(60.0, alias="DQ_MAX_OPTION_JUMP_PCT")
+    dq_stale_timestamp_seconds: float = Field(30.0, alias="DQ_STALE_TIMESTAMP_SECONDS")
+    tick_recording: bool = Field(True, alias="TICK_RECORDING")                          # runtime/ticks/YYYY-MM-DD.jsonl.gz journal
+    slo_tick_to_mark_ms: float = Field(50.0, alias="SLO_TICK_TO_MARK_MS")
+    slo_quote_to_eval_ms: float = Field(150.0, alias="SLO_QUOTE_TO_EVAL_MS")
+    slo_order_fill_ms: float = Field(3000.0, alias="SLO_ORDER_FILL_MS")
+    slo_council_cycle_ms: float = Field(8000.0, alias="SLO_COUNCIL_CYCLE_MS")
+    backup_dir: str = Field("", alias="BACKUP_DIR")                                       # blank = RUNTIME_DIR/backups
+    backup_keep: int = Field(14, alias="BACKUP_KEEP")
+    backup_interval_minutes: float = Field(30.0, alias="BACKUP_INTERVAL_MINUTES")        # 0 = only at end of day
+    four_eyes_required: bool | None = Field(None, alias="FOUR_EYES_REQUIRED")          # default: on when TRADING_ENV=LIVE
+    session_ttl_hours: float = Field(12.0, alias="SESSION_TTL_HOURS")
+    login_lockout_attempts: int = Field(5, alias="LOGIN_LOCKOUT_ATTEMPTS")
+    login_lockout_minutes: float = Field(15.0, alias="LOGIN_LOCKOUT_MINUTES")
+
     # --- guardian (self-monitoring / self-healing; asks for permission by default) ---
     guardian_enabled: bool = Field(True, alias="GUARDIAN_ENABLED")
     guardian_interval_seconds: float = Field(5.0, alias="GUARDIAN_INTERVAL_SECONDS")

@@ -13,9 +13,11 @@ from terminal.agents.journal import Journal
 from terminal.agents.orchestrator import Council
 from terminal.analytics.evaluation import CouncilEvaluator
 from terminal.analytics.models import EntryQualityModel
+from terminal.analytics.tca import PnLAttribution, TransactionCostAnalysis
 from terminal.config import Settings, get_settings
 from terminal.core.audit import AuditLog
 from terminal.core.bus import EventBus
+from terminal.core.governance import Governance
 from terminal.core.models import OptionChain, OptionQuote, OrderSource, TerminalMode, Tick, TradingEnv
 from terminal.execution.brokers.base import Broker
 from terminal.execution.brokers.live import AngelOneBroker, KotakNeoBroker, ZerodhaBroker
@@ -29,13 +31,18 @@ from terminal.market.chain import OptionChainBuilder
 from terminal.market.feed import AngelOneFeed, KotakNeoFeed, MarketFeed, ZerodhaFeed
 from terminal.market.kotak import KotakNeoSession
 from terminal.market.processor import MarketDataProcessor
+from terminal.market.quality import DataQualityMonitor
 from terminal.market.universe import VIX_SYMBOL, Universe
 from terminal.market.zerodha import ZerodhaSession
 from terminal.monitoring.health import HealthMonitor
+from terminal.monitoring.latency import LatencyTracker
 from terminal.monitoring.metrics import Metrics
 from terminal.notifications.alerts import AlertEngine
 from terminal.notifications.telegram import TelegramCommands
 from terminal.risk.manager import RiskManager
+from terminal.risk.portfolio import PortfolioRisk
+from terminal.risk.pretrade import PreTradeControls
+from terminal.storage.backup import BackupManager
 from terminal.storage.db import Database
 from terminal.strategy.engine import StrategyEngine
 from terminal.strategy.scheduler import Scheduler
@@ -67,6 +74,8 @@ class Terminal:
         self.loop_lag_ms = 0.0
         self.ws_clients: Set = set()
         self.started_at = time.time()
+        self.dq = DataQualityMonitor(s, s.runtime_dir)
+        self.latency = LatencyTracker(s)
         # feeds & broker: one live broker session (Kotak Neo or Zerodha Kite) shared by feed, chain poller and broker
         self.live = None  # KotakNeoSession | ZerodhaSession | None
         providers = {s.data_source.lower()} | ({s.broker.lower()} if self.env == TradingEnv.LIVE else set())
@@ -98,6 +107,10 @@ class Terminal:
         self.stream_stats = {"subscribed": 0, "quotes": 0, "last_ts": 0.0}
         self.recovery: Dict[str, int] = {}
         self._eod_done_day = ""
+        self.pretrade = PreTradeControls(self)
+        self.portfolio_risk = PortfolioRisk(self)
+        self.tca = TransactionCostAnalysis(self)
+        self.attribution = PnLAttribution(self)
         self.risk = RiskManager(self)
         self.entry_model = EntryQualityModel(self.db)
         self.evaluator = CouncilEvaluator(self)
@@ -108,6 +121,9 @@ class Terminal:
         self.telegram = TelegramCommands(self)
         self.health = HealthMonitor(self)
         self.guardian = GuardianAgent(self)
+        self.backups = BackupManager(self)
+        self.governance = Governance(self)
+        self._register_governed_actions()
         self.heartbeats: Dict[str, float] = {}
         self._loop_tasks: Dict[str, asyncio.Task] = {}
         self._tasks: List[asyncio.Task] = []
@@ -163,6 +179,43 @@ class Terminal:
         self.engine_running = True
         self.log("INFO", "terminal", f"{PRODUCT} v{__version__} started: mode={self.mode.value} env={self.env.value} feed={self.feed.name} broker={self.broker.name}")
 
+    def _register_governed_actions(self) -> None:
+        async def limits(payload, actor):
+            return self.risk.update_limits(payload.get("limits", {}), actor)
+
+        async def mode_auto(payload, actor):
+            await self.set_mode(TerminalMode.AUTO, actor, reason=payload.get("reason", "governed"))
+            return self.mode.value
+
+        async def gate_open(payload, actor):
+            self.risk.set_gate(True, actor)
+            return "OPEN"
+
+        async def guardian_policy(payload, actor):
+            self.guardian.auto_apply = payload["auto_apply"]
+            self.db.config_change("guardian.auto_apply", None, payload["auto_apply"], actor)
+            self.audit.record("GUARDIAN_POLICY", {"auto_apply": payload["auto_apply"]}, actor)
+            return payload["auto_apply"]
+
+        self.governance.register("risk_limits", limits)
+        self.governance.register("mode_auto", mode_auto)
+        self.governance.register("gate_open", gate_open)
+        self.governance.register("guardian_policy", guardian_policy)
+
+    async def _backup_loop(self) -> None:
+        await asyncio.sleep(20.0)
+        while not self._stop.is_set():
+            self.beat("backup-loop")
+            try:
+                if self.backups.due():
+                    res = self.backups.run("scheduled")
+                    if not res["ok"]:
+                        self.log("WARNING", "backup", f"backup failed: {res['error']}")
+                self.dq.flush()
+            except Exception:
+                log.exception("backup loop error")
+            await asyncio.sleep(30.0)
+
     def loop_specs(self) -> Dict[str, tuple]:
         """Supervised loops: name -> (coroutine factory, expected heartbeat period in seconds). The Guardian
         watches each heartbeat and can restart a loop (with the operator's permission) if it stalls or crashes."""
@@ -176,6 +229,7 @@ class Terminal:
             specs["reconcile-loop"] = (self._reconcile_loop, 2.0)
         if self.guardian.enabled:
             specs["guardian-loop"] = (self.guardian.run, float(s.guardian_interval_seconds))
+        specs["backup-loop"] = (self._backup_loop, 30.0)
         return specs
 
     def loop_task(self, name: str) -> asyncio.Task | None:
@@ -213,6 +267,7 @@ class Terminal:
             except (asyncio.CancelledError, Exception):
                 pass
         await self.feed.stop()
+        self.dq.flush()
         self.db.close()
 
     # ------------------------------------------------------------- recovery
@@ -240,6 +295,10 @@ class Terminal:
         for k in ("oi", "volume", "bid", "ask", "oi_change"):
             if fields.get(k) is not None:
                 q[k] = fields[k]
+        if self.dq.validate(symbol, float(q["ltp"] or 0), bid=float(q.get("bid") or 0), ask=float(q.get("ask") or 0), is_option=True) is not None:
+            return
+        t_eval = time.perf_counter()
+        self.dq.record("O", symbol, q)
         self.chain_builder.apply_broker_quotes({symbol: q})
         self.stream_stats["quotes"] += 1
         self.stream_stats["last_ts"] = time.time()
@@ -258,6 +317,7 @@ class Terminal:
             self._tick_eval_pending = True
             try:
                 await self.strategies.monitor()
+                self.latency.observe("quote_to_eval", (time.perf_counter() - t_eval) * 1000)
             finally:
                 self._tick_eval_pending = False
 
@@ -368,7 +428,12 @@ class Terminal:
 
     # ------------------------------------------------------------- loops
     async def _on_tick(self, tick: Tick) -> None:
+        if self.dq.validate(tick.symbol, tick.ltp, tick.ts) is not None:
+            return
+        t0 = time.perf_counter()
         self.processor.push(tick)
+        self.dq.record("T", tick.symbol, {"p": tick.ltp, "c": tick.change_pct})
+        self.latency.observe("tick_to_mark", (time.perf_counter() - t0) * 1000)
 
     async def _chain_loop(self) -> None:
         while not self._stop.is_set():
@@ -404,6 +469,7 @@ class Terminal:
                             self._quotes[r.ce.symbol] = r.ce
                             self._quotes[r.pe.symbol] = r.pe
                 self.positions.mark(self.quote)
+                self.attribution.update()
                 await self.strategies.monitor()
             except Exception:
                 log.exception("chain loop error")
@@ -469,6 +535,9 @@ class Terminal:
             self.log("INFO", "journal", f"daily journal written: P&L ₹{entry['pnl']:,.0f}, {entry['trades']} trades")
         except Exception:
             log.exception("journal write failed")
+        self.dq.flush()
+        res = self.backups.run("eod")
+        self.log("INFO" if res["ok"] else "WARNING", "backup", f"end-of-day backup: {res}")
 
     async def _council_loop(self) -> None:
         await asyncio.sleep(3.0)
@@ -476,7 +545,9 @@ class Terminal:
             self.beat("council-loop")
             try:
                 if not self.paused and self.chains and self.scheduler.in_operating_window():
+                    done = self.latency.timer("council_cycle")
                     await self.council.run_cycle()
+                    done()
             except Exception:
                 log.exception("council loop error")
             await asyncio.sleep(self.settings.agent_cycle_seconds)
@@ -550,7 +621,8 @@ class Terminal:
             "alerts": [a.model_dump(mode="json") for a in self.alerts.recent[-15:][::-1]], "scheduler": self.scheduler.describe(), "exits": self.exit_guard.describe(),
             "reconcile": {"orders": self.order_reconciler.describe(), "positions": self.position_reconciler.describe(), "stream": self.stream_stats, "recovery": self.recovery},
             "copilot": self.copilot.status(), "model": self.entry_model.describe(), "telegram": self.telegram.status(), "pnl": self.pnl_summary(),
-            "guardian": self.guardian.describe(20),
+            "guardian": self.guardian.describe(20), "governance": self.governance.describe(), "data_quality": self.dq.describe(), "latency": self.latency.stats(),
+            "tca": self.tca.summary(), "attribution": self.attribution.describe(), "backups": self.backups.describe(),
         }
 
 

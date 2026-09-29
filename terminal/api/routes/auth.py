@@ -25,8 +25,13 @@ async def me(request: Request):
 
 @router.post("/login")
 async def login(body: LoginBody, request: Request):
-    res = request.app.state.auth.login(body.username, body.password)
+    auth = request.app.state.auth
+    if auth.locked(body.username):
+        request.app.state.terminal.audit.record("LOGIN_LOCKED", {"username": body.username}, body.username)
+        raise HTTPException(status_code=429, detail="ACCOUNT_LOCKED")
+    res = auth.login(body.username, body.password)
     if not res:
+        request.app.state.terminal.audit.record("LOGIN_FAILED", {"username": body.username}, body.username)
         raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
     request.app.state.terminal.audit.record("LOGIN", {"username": body.username}, body.username)
     return ok(res)

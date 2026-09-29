@@ -263,7 +263,29 @@ class GuardianAgent:
         if len(recent) >= 8:
             out.append(Finding(component="runtime", symptom="ERROR_BURST", severity="CRITICAL", summary=f"{len(recent)} CRITICAL log lines in the last minute",
                                evidence={"messages": [r.get("message", "")[:160] for r in recent[:6]]}, diagnosis=["Repeated failures in one component; see messages. Pausing entries limits damage while the cause is fixed."], remedy="pause_entries"))
-        # 9. host resources
+        # 9. market-data quality
+        dq = t.dq
+        rate = dq.reject_rate(60)
+        bad = dq.bad_symbols(60)
+        if rate >= 5.0 or bad:
+            severe = rate >= 20 or any(b["reject_rate_pct"] >= 50 for b in bad)
+            summary = (f"{rate}% of all market-data updates rejected in the last minute" if rate >= 5.0 else f"{len(bad)} instrument(s) with unusable prices: " + ", ".join(f"{b['symbol']} {b['reject_rate_pct']}%" for b in bad[:3]))
+            out.append(Finding(component="data", symptom="DATA_QUALITY", severity="CRITICAL" if severe else "WARNING", summary=summary,
+                               evidence={"reject_rate_pct": rate, "by_reason": dq.by_reason, "bad_symbols": bad[:5]},
+                               diagnosis=["Bad prints, crossed quotes or a feed replaying stale data; marks and stop-losses on these contracts cannot be trusted while this persists."], remedy="pause_entries" if severe else None))
+        if dq.record_errors and dq.recording:
+            out.append(Finding(component="data", symptom="TICK_RECORDER_ERRORS", severity="WARNING", summary=f"{dq.record_errors} tick-journal write errors (disk?)", evidence={"errors": dq.record_errors}, diagnosis=["The tick journal could not be written; check disk space / permissions."], remedy="prune_history"))
+        # 10. latency SLOs
+        breached = t.latency.breached()
+        if breached:
+            worst = max(breached.items(), key=lambda kv: (kv[1]["p95"] or 0) / (kv[1]["slo_ms"] or 1))
+            fill_breach = "order_submit_to_fill" in breached
+            out.append(Finding(component="runtime", symptom="LATENCY_SLO", severity="CRITICAL" if fill_breach else "WARNING", summary=f"p95 {worst[0]} = {worst[1]['p95']} ms > SLO {worst[1]['slo_ms']} ms",
+                               evidence={"breached": breached}, diagnosis=["Ticks or orders are being processed later than the desk's SLO allows; entries add risk that cannot be managed in time."], remedy="pause_entries" if fill_breach else None))
+        # 11. backups
+        if t.backups.last_error:
+            out.append(Finding(component="host", symptom="BACKUP_FAILED", severity="WARNING", summary=f"last backup failed: {t.backups.last_error}", evidence={"error": t.backups.last_error, "dir": str(t.backups.dir)}, diagnosis=["Without a backup a disk failure loses the book and the audit trail."], remedy="prune_history"))
+        # 12. host resources
         mem = t.health.memory().get("used_pct")
         disk = t.health.disk().get("used_pct")
         if (mem is not None and mem > 92) or (disk is not None and disk > 95):

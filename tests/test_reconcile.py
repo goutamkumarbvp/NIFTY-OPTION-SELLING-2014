@@ -190,6 +190,10 @@ async def test_option_stream_subscriptions_and_quote_overlay(terminal):
     n = await feed.subscribe_options([{"symbol": atm.ce.symbol, "token": hit["token"], "segment": "nse_fo"}])
     assert n == 1 and feed.streamed_options() == 1
     before = t.stream_stats["quotes"]
+    rejected_before = t.dq.by_reason.get("PRICE_JUMP", 0)
+    await feed._emit_option(atm.ce.symbol, {"ltp": 999.5, "oi": 777, "volume": 5})
+    # a +400% print is held by the data-quality gate until a second update confirms it
+    assert t.stream_stats["quotes"] == before and t.dq.by_reason["PRICE_JUMP"] == rejected_before + 1
     await feed._emit_option(atm.ce.symbol, {"ltp": 999.5, "oi": 777, "volume": 5})
     assert t.stream_stats["quotes"] == before + 1
     rebuilt = t.chain_builder.build(t.universe.get("NIFTY"), ch.spot, 13.0, ch.expiry)

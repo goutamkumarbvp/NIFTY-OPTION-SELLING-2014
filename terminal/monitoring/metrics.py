@@ -38,6 +38,16 @@ class Metrics:
         g("terminal_portfolio_delta", r.portfolio_delta, "portfolio delta")
         g("terminal_portfolio_vega", r.portfolio_vega, "portfolio vega")
         g("terminal_orders_total", len(orders), "orders this session")
+        g("terminal_stress_worst_loss", r.stress_worst_loss, "worst scenario loss in INR")
+        for name, st in t.latency.stats().items():
+            if st["p95"] is not None:
+                g("terminal_latency_p95_ms", st["p95"], "p95 latency per path", f'path="{name}"')
+        dq = t.dq.describe()
+        g("terminal_data_rejected_total", dq["rejected"], "market-data updates rejected by the quality gate")
+        g("terminal_data_reject_rate_1m_pct", dq["reject_rate_1m_pct"], "reject rate over the last minute")
+        g("terminal_tca_avg_slippage_bps", t.tca.summary().get("avg_slippage_bps") or 0, "average implementation shortfall in bps")
+        g("terminal_backups_total", t.backups.count, "backups taken this session")
+        g("terminal_governance_pending", len(t.governance.pending()), "control changes awaiting four-eyes approval")
         g("terminal_orders_filled_total", sum(1 for o in orders if o.status.value == "FILLED"), "filled orders this session")
         g("terminal_orders_rejected_total", sum(1 for o in orders if "REJECT" in o.status.value), "rejected orders this session")
         g("terminal_exits_pending", len(t.exit_guard.pending()), "square-offs being retried")

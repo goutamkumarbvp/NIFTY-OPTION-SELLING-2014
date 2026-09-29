@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS agent_memory (key TEXT PRIMARY KEY, value TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS daily_stats (day TEXT PRIMARY KEY, realized REAL, trades INTEGER, charges REAL, data TEXT);
 CREATE TABLE IF NOT EXISTS system_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, level TEXT, source TEXT, message TEXT);
+CREATE TABLE IF NOT EXISTS tca (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, order_id TEXT, symbol TEXT, side TEXT, source TEXT, data TEXT);
+CREATE TABLE IF NOT EXISTS config_history (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, key TEXT, old TEXT, new TEXT, actor TEXT);
 CREATE TABLE IF NOT EXISTS positions (symbol TEXT PRIMARY KEY, ts REAL, data TEXT);
 CREATE TABLE IF NOT EXISTS journal (day TEXT PRIMARY KEY, ts REAL, data TEXT);
 CREATE TABLE IF NOT EXISTS decision_journal (id TEXT PRIMARY KEY, ts REAL, underlying TEXT, decision TEXT, features TEXT, outcome TEXT, scored_at REAL);
@@ -180,6 +182,18 @@ class Database:
         # keep table bounded
         if int(time.time()) % 97 == 0:
             self._exec("DELETE FROM system_log WHERE id < (SELECT MAX(id) FROM system_log) - 20000")
+
+    def save_tca(self, row: Dict[str, Any]) -> None:
+        self._exec("INSERT INTO tca (ts, order_id, symbol, side, source, data) VALUES (?,?,?,?,?,?)", (row["ts"], row["order_id"], row["symbol"], row["side"], row["source"], json.dumps(row, default=str)))
+
+    def tca_rows(self, limit: int = 500) -> List[Dict[str, Any]]:
+        return [json.loads(r["data"]) for r in self._rows("SELECT data FROM tca ORDER BY id DESC LIMIT ?", (limit,))]
+
+    def config_change(self, key: str, old: Any, new: Any, actor: str) -> None:
+        self._exec("INSERT INTO config_history (ts, key, old, new, actor) VALUES (?,?,?,?,?)", (time.time(), key, json.dumps(old, default=str), json.dumps(new, default=str), actor))
+
+    def config_history(self, limit: int = 100) -> List[Dict[str, Any]]:
+        return [dict(r) for r in self._rows("SELECT * FROM config_history ORDER BY id DESC LIMIT ?", (limit,))]
 
     def prune_logs(self, keep: int = 20000) -> int:
         """Delete the oldest system_log rows beyond `keep`; trades, orders and audit are never pruned."""

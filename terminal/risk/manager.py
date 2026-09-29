@@ -9,6 +9,8 @@ import time
 from typing import Dict, List
 
 from terminal.core.models import Order, OrderSource, OrderStatus, RiskLevel, RiskSnapshot, Side, TerminalMode, TradePlan
+from terminal.risk.portfolio import DEFAULT_LIMITS as PORTFOLIO_LIMITS
+from terminal.risk.pretrade import DEFAULT_LIMITS as PRETRADE_LIMITS
 from terminal.strategy.library import estimate_margin
 
 
@@ -28,7 +30,10 @@ class RiskManager:
             "portfolio_vega_limit": s.portfolio_vega_limit,
             "auto_max_trades_per_day": s.auto_max_trades_per_day,
             "naked_short_allowed": 1.0 if s.naked_short_allowed else 0.0,
+            **PRETRADE_LIMITS,
+            **PORTFOLIO_LIMITS,
         }
+        self.limits["max_stress_loss"] = 2.0 * self.limits["max_daily_loss"]
         saved = terminal.db.get_setting("risk_limits")
         if isinstance(saved, dict):
             for k, v in saved.items():
@@ -49,11 +54,14 @@ class RiskManager:
 
     # ---------------------------------------------------------------- limits
     def update_limits(self, patch: Dict[str, float], actor: str) -> Dict[str, float]:
+        changed = {}
         for k, v in patch.items():
-            if k in self.limits:
+            if k in self.limits and float(v) != self.limits[k]:
+                self.t.db.config_change(f"risk_limits.{k}", self.limits[k], float(v), actor)
+                changed[k] = {"old": self.limits[k], "new": float(v)}
                 self.limits[k] = float(v)
         self.t.db.set_setting("risk_limits", self.limits)
-        self.t.audit.record("RISK_LIMITS_UPDATED", patch, actor)
+        self.t.audit.record("RISK_LIMITS_UPDATED", changed or patch, actor)
         return self.limits
 
     # ---------------------------------------------------------------- margin
@@ -135,6 +143,9 @@ class RiskManager:
             reasons.append("LIVE_INTERLOCK")
         if not self.t.feed.is_fresh(s.feed_stale_seconds) and not reducing:
             reasons.append("FEED_STALE")
+        if not reducing and any(b.startswith(("STRESS_LOSS", "CLUSTER_DELTA")) for b in self.breaches):
+            reasons.append("PORTFOLIO_STRESS_BREACH")
+        reasons += self.t.pretrade.check(order, reducing)
         return {"allowed": not reasons, "reasons": reasons}
 
     def check_plan(self, plan: TradePlan) -> Dict[str, object]:
@@ -153,6 +164,8 @@ class RiskManager:
             reasons.append(why)  # e.g. OUTSIDE_OPERATING_HOURS / SESSION_CLOSED, before any leg is sent
         if not self.t.feed.is_fresh(self.t.settings.feed_stale_seconds):
             reasons.append("FEED_STALE")
+        if any(b.startswith(("STRESS_LOSS", "CLUSTER_DELTA")) for b in self.breaches):
+            reasons.append("PORTFOLIO_STRESS_BREACH")
         total_lots = sum(l.lots for l in plan.legs)
         if self.t.positions.open_lots() + total_lots > self.limits["max_open_lots"]:
             reasons.append("MAX_OPEN_LOTS")
@@ -213,6 +226,12 @@ class RiskManager:
             breaches.append("MAX_OPEN_LOTS")
         if not self.t.feed.is_fresh(self.t.settings.feed_stale_seconds):
             warnings.append("FEED_STALE")
+        try:
+            pr = self.t.portfolio_risk.evaluate(g)
+            breaches += pr["breaches"]
+            warnings += pr["warnings"]
+        except Exception:
+            warnings.append("PORTFOLIO_RISK_UNAVAILABLE")
         target = self.limits.get("daily_profit_target", 0)
         if target and daily >= target and not self.halted_reason:
             warnings.append("PROFIT_TARGET_REACHED")
@@ -228,7 +247,9 @@ class RiskManager:
                                      loss_budget_used_pct=round(used_pct, 1), margin_used=margin, margin_available=round(cap - margin, 0), margin_utilisation_pct=round(util, 1),
                                      open_lots=pm.open_lots(), open_positions=len(pm.open_positions()), portfolio_delta=g["delta"], portfolio_gamma=g["gamma"],
                                      portfolio_theta=g["theta"], portfolio_vega=g["vega"], kill_switch=self.kill_switch, safety_gate_open=self.safety_gate_open,
-                                     breaches=breaches, warnings=warnings, per_market_lots=pm.lots_by_market(), trades_today=self.t.orders.trades_today)
+                                     breaches=breaches, warnings=warnings, per_market_lots=pm.lots_by_market(), trades_today=self.t.orders.trades_today,
+                                     stress_worst_loss=self.t.portfolio_risk.last.get("worst_loss", 0.0), stress_worst_scenario=self.t.portfolio_risk.last.get("worst_scenario", ""),
+                                     cluster_exposure={k: v["delta_notional"] for k, v in self.t.portfolio_risk.last.get("clusters", {}).items()})
         if "DAILY_LOSS_LIMIT" in breaches and not self.halted_reason and not self._halt_in_progress:
             await self.halt("DAILY_LOSS_LIMIT", actor="risk-manager")
         if target and daily >= target and not self.halted_reason and self.t.mode == TerminalMode.AUTO and pm.open_positions():
@@ -298,4 +319,5 @@ class RiskManager:
         self.t.audit.record("MARKET_TOGGLE", {"market": market, "enabled": enabled}, actor)
 
     def describe(self) -> dict:
-        return {"snapshot": self.snapshot.model_dump(mode="json"), "limits": self.limits, "halted_reason": self.halted_reason, "markets": self.market_enabled}
+        return {"snapshot": self.snapshot.model_dump(mode="json"), "limits": self.limits, "halted_reason": self.halted_reason, "markets": self.market_enabled,
+                "pretrade": self.t.pretrade.describe(), "portfolio": self.t.portfolio_risk.describe()}

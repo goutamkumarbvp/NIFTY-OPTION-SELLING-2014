@@ -99,7 +99,38 @@ class EntryQualityModel:
         if n:
             self.db.memory_set(self.KEY, self.model.to_dict())
             self.db.memory_set(self.KEY + ":ids", sorted(self._trained_ids)[-5000:])
+            self._snapshot(n)
         return n
+
+    # ------------------------------------------------------------ governance
+    def versions(self) -> List[Dict[str, Any]]:
+        return list(self.db.memory_get(self.KEY + ":versions", []) or [])
+
+    def _snapshot(self, trained: int) -> Dict[str, Any]:
+        import time as _t
+        vs = self.versions()
+        d = self.model.to_dict()
+        v = {"version": (vs[-1]["version"] + 1) if vs else 1, "ts": _t.time(), "samples": d["n"], "loss_ema": round(d["loss_ema"], 4) if d["loss_ema"] is not None else None, "trained": trained, "model": d}
+        vs = (vs + [v])[-20:]
+        self.db.memory_set(self.KEY + ":versions", vs)
+        return v
+
+    def rollback(self, version: int) -> Dict[str, Any]:
+        for v in self.versions():
+            if v["version"] == version:
+                self.model = OnlineLogit.from_dict(v["model"])
+                self.db.memory_set(self.KEY, self.model.to_dict())
+                return v
+        raise KeyError(f"UNKNOWN_MODEL_VERSION:{version}")
+
+    def drift(self) -> Dict[str, Any]:
+        """Loss drift: current loss EMA versus the best historical version."""
+        vs = [v for v in self.versions() if v.get("loss_ema") is not None]
+        cur = self.model.to_dict().get("loss_ema")
+        if not vs or cur is None:
+            return {"drifting": False, "current_loss": cur, "best_loss": None, "best_version": None}
+        best = min(vs, key=lambda v: v["loss_ema"])
+        return {"drifting": cur > best["loss_ema"] * 1.25 and cur > 0.5, "current_loss": round(cur, 4), "best_loss": best["loss_ema"], "best_version": best["version"]}
 
     def predict(self, features: Dict[str, Any]) -> float | None:
         x = vectorize(features)
@@ -107,4 +138,6 @@ class EntryQualityModel:
 
     def describe(self) -> Dict[str, Any]:
         d = self.model.to_dict()
-        return {"samples": d["n"], "loss_ema": round(d["loss_ema"], 4) if d["loss_ema"] is not None else None, "weights": {f: round(w, 3) for f, w in zip(FEATURES, d["w"])}, "bias": round(d["b"], 3)}
+        vs = self.versions()
+        return {"samples": d["n"], "loss_ema": round(d["loss_ema"], 4) if d["loss_ema"] is not None else None, "weights": {f: round(w, 3) for f, w in zip(FEATURES, d["w"])}, "bias": round(d["b"], 3),
+                "version": vs[-1]["version"] if vs else 0, "versions": len(vs), "drift": self.drift()}
