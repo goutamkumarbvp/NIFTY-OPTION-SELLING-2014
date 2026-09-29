@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 from terminal.core.clock import expiry_series, now_ist, parse_hhmm, year_fraction_to_expiry
 from terminal.core.models import ChainRow, OptionChain, OptionQuote, OptionType, Underlying
-from terminal.market.pricing import bs_greeks, bs_price, round_to_tick
+from terminal.market.pricing import bs_greeks, bs_price, implied_vol, round_to_tick
 
 
 class OptionChainBuilder:
@@ -69,6 +69,15 @@ class OptionChainBuilder:
     def apply_broker_quotes(self, quotes: Dict[str, dict]) -> None:
         self._broker_quotes.update(quotes)
 
+    @property
+    def broker_quote_count(self) -> int:
+        return len(self._broker_quotes)
+
+    @staticmethod
+    def option_symbol(underlying: str, expiry_iso: str, strike: float, option_type: str) -> str:
+        exp_date = dt.date.fromisoformat(expiry_iso)
+        return f"{underlying}{exp_date.strftime('%d%b%y').upper()}{int(strike)}{option_type}"
+
     # ------------------------------------------------------------------ build
     def build(self, u: Underlying, spot: float, vix: float, expiry: Optional[str] = None, now: Optional[dt.datetime] = None,
               extra_strikes: Optional[set] = None) -> OptionChain:
@@ -103,9 +112,14 @@ class OptionChainBuilder:
                 key = (u.symbol, expiry, strike, ot.value)
                 sym = f"{u.symbol}{exp_date.strftime('%d%b%y').upper()}{int(strike)}{ot.value}"
                 bq = self._broker_quotes.get(sym)
-                if bq:
+                if bq and float(bq.get("ltp", 0)) > 0:
                     ltp = float(bq.get("ltp", 0))
-                    iv = float(bq.get("iv", iv)) or iv
+                    live_iv = float(bq.get("iv", 0) or 0)
+                    if live_iv > 1.5:  # broker quotes IV in percent
+                        live_iv /= 100.0
+                    if live_iv <= 0:
+                        live_iv = implied_vol(ltp, spot, strike, t, is_call)
+                    iv = live_iv if live_iv > 0 else iv
                     oi = int(bq.get("oi", 0))
                     vol = int(bq.get("volume", 0))
                     oi_change = int(bq.get("oi_change", 0))

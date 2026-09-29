@@ -140,6 +140,10 @@ def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
     async def _value_error(_: Request, exc: ValueError):
         return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
 
+    @app.exception_handler(RuntimeError)
+    async def _runtime_error(_: Request, exc: RuntimeError):
+        return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
+
     @app.exception_handler(KeyError)
     async def _key_error(_: Request, exc: KeyError):
         return JSONResponse(status_code=404, content={"ok": False, "error": f"NOT_FOUND:{exc}"})
@@ -478,6 +482,27 @@ def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
         masked = {k: ("••••" if any(x in k for x in ("key", "secret", "password", "token", "mpin")) and v else v) for k, v in s.model_dump().items()}
         masked["runtime_dir"] = str(s.runtime_dir)
         return ok({"settings": masked, "auth": app.state.auth.describe(), "strategies": T().strategies.describe()["strategies"], "risk_limits": T().risk.limits})
+
+    # ------------------------------------------------------------------ kotak neo
+    @app.get("/api/broker/kotak/status")
+    async def kotak_status(user: dict = Depends(require("viewer"))):
+        t = T()
+        if t.kotak is None:
+            return ok({"configured": False, "hint": "Set DATA_SOURCE=kotak (and/or BROKER=kotak with TRADING_ENV=LIVE) plus NEO_* credentials in .env"})
+        return ok({"configured": True, **t.kotak.status(), "chain": t.kotak_chain_stats, "feed": t.feed.status()})
+
+    @app.post("/api/broker/kotak/connect")
+    async def kotak_connect(user: dict = Depends(require("admin"))):
+        t = T()
+        if t.kotak is None:
+            raise ValueError("KOTAK_NOT_CONFIGURED")
+        t.kotak.authenticated = False
+        result = await t.kotak.connect()
+        found = await t.kotak.resolve_index_tokens(t.universe.all(), include_vix=True)
+        if t.feed.name == "kotak_neo":
+            await t.feed.reconnect()
+        t.audit.record("KOTAK_RECONNECT", {"tokens": list(found)}, user["username"])
+        return ok({"login": result, "tokens": found})
 
     # ------------------------------------------------------------------ websocket
     @app.websocket("/ws")

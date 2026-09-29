@@ -187,68 +187,107 @@ class SimulatedFeed(MarketFeed):
 
 
 class KotakNeoFeed(MarketFeed):
-    """Kotak Neo live feed adapter.
+    """Kotak Neo live feed (SDK 3.x SFeed WebSocket).
 
-    The adapter authenticates with the Neo API (consumer key + mobile + UCC +
-    MPIN + TOTP) and subscribes to index/underlying quotes. It is deliberately
-    read-only. Activate with ``DATA_SOURCE=kotak`` and the NEO_* variables.
+    Indices (NIFTY, BANKNIFTY, SENSEX, INDIAVIX ...) stream from the cash
+    segments; MCX underlyings stream as the nearest futures contract. The
+    session (login, token discovery) is shared with the broker and the
+    option-chain poller. Read-only.
     """
 
     name = "kotak_neo"
 
-    def __init__(self, universe: List[Underlying], settings) -> None:
+    def __init__(self, universe: List[Underlying], session) -> None:
         super().__init__()
         self.universe = universe
-        self.settings = settings
-        self._client = None
+        self.session = session
         self._task: Optional[asyncio.Task] = None
+        self._stop = asyncio.Event()
+        self._token_map: Dict[str, str] = {}  # instrument token -> our symbol
+        self.market_status: Dict[str, str] = {}
+        self.reconnects = 0
 
     async def start(self) -> None:
-        s = self.settings
-        missing = [k for k, v in {"NEO_CONSUMER_KEY": s.neo_consumer_key, "NEO_MOBILE_NUMBER": s.neo_mobile_number, "NEO_UCC": s.neo_ucc, "NEO_MPIN": s.neo_mpin, "NEO_TOTP_SECRET": s.neo_totp_secret}.items() if not v]
-        if missing:
-            raise RuntimeError(f"KOTAK_CREDENTIALS_MISSING: {', '.join(missing)}")
-        try:
-            from neo_api_client import NeoAPI  # type: ignore
-            import pyotp  # type: ignore
-        except Exception as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError("KOTAK_SDK_NOT_INSTALLED: pip install kotakneoapi pyotp") from exc
-
-        loop = asyncio.get_running_loop()
-
-        def _connect():
-            client = NeoAPI(consumer_key=s.neo_consumer_key, environment="prod", access_token=None, neo_fin_key=None)
-            client.login(mobilenumber=s.neo_mobile_number, ucc=s.neo_ucc, totp=pyotp.TOTP(s.neo_totp_secret).now())
-            client.session_2fa(OTP=s.neo_mpin)
-            return client
-
-        self._client = await loop.run_in_executor(None, _connect)
-        self.connected = True
-
-        def _on_message(message):
-            try:
-                rows = message if isinstance(message, list) else [message]
-                for row in rows:
-                    sym = str(row.get("ts") or row.get("tk") or "").upper()
-                    ltp = float(row.get("ltp") or row.get("lp") or 0)
-                    if not sym or ltp <= 0:
-                        continue
-                    for u in self.universe:
-                        if u.symbol in sym:
-                            asyncio.run_coroutine_threadsafe(self._emit(Tick(symbol=u.symbol, ltp=ltp)), loop)
-            except Exception:
-                self.errors += 1
-
-        self._client.on_message = _on_message
-        tokens = [{"instrument_token": u.symbol, "exchange_segment": "nse_cm" if u.exchange.value == "NSE" else ("bse_cm" if u.exchange.value == "BSE" else "mcx_fo")} for u in self.universe]
-        await loop.run_in_executor(None, lambda: self._client.subscribe(instrument_tokens=tokens, isIndex=True))
-        log.info("Kotak Neo feed connected")
+        if self._task and not self._task.done():
+            return
+        await self.session.connect()
+        found = await self.session.resolve_index_tokens(self.universe, include_vix=True)
+        if not found:
+            raise RuntimeError("KOTAK_NO_INSTRUMENT_TOKENS_RESOLVED")
+        self._token_map = {str(v["token"]): sym for sym, v in found.items()}
+        self._stop = asyncio.Event()
+        self._task = asyncio.create_task(self._run(), name="kotak-sfeed")
+        log.info("Kotak Neo feed starting for %s", ", ".join(found))
 
     async def stop(self) -> None:
         self.connected = False
-        if self._client is not None:
+        self._stop.set()
+        if self._task:
+            self._task.cancel()
             try:
-                self._client.un_subscribe(instrument_tokens=[])
-            except Exception:
+                await self._task
+            except (asyncio.CancelledError, Exception):
                 pass
-        self._client = None
+        self._task = None
+
+    async def reconnect(self) -> None:
+        await self.stop()
+        self.session.authenticated = False
+        self.reconnects += 1
+        await self.start()
+
+    async def _run(self) -> None:
+        from terminal.market.kotak import tick_from_message
+        try:
+            from neo_api_client.websocket.feed import WsToken  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional dependency
+            self.errors += 1
+            log.error("kotak SDK missing: %s", exc)
+            return
+        backoff = 2.0
+        while not self._stop.is_set():
+            try:
+                ws = self.session.websocket()
+                async with ws:
+                    self.connected = True
+                    await ws.subscribe_exchange()
+                    await ws.subscribe_scrips([WsToken(v["segment"], str(v["token"])) for v in self.session.tokens.values()])
+                    backoff = 2.0
+                    async for msg in ws:
+                        if self._stop.is_set():
+                            break
+                        kind = type(msg).__name__
+                        if kind == "SFeedMarketStatus":
+                            self.market_status[str(getattr(msg, "exchange_segment", ""))] = str(getattr(msg, "status", ""))
+                            continue
+                        fields = tick_from_message(msg)
+                        if not fields:
+                            continue
+                        sym = self._token_map.get(fields["token"])
+                        if sym is None:
+                            continue
+                        await self._emit(Tick(symbol=sym, ltp=fields["ltp"], change_pct=round(fields["change_pct"], 2), open=fields["open"], high=fields["high"], low=fields["low"],
+                                              prev_close=fields["prev_close"], volume=fields["volume"]))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.errors += 1
+                self.connected = False
+                log.warning("kotak feed error: %s (retry in %.0fs)", exc, backoff)
+                if "auth" in str(exc).lower() or "token" in str(exc).lower():
+                    self.session.authenticated = False
+                    try:
+                        await self.session.connect()
+                    except Exception as e2:
+                        log.warning("kotak re-login failed: %s", e2)
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
+                except asyncio.TimeoutError:
+                    pass
+                backoff = min(backoff * 2, 60.0)
+        self.connected = False
+
+    def status(self) -> dict:
+        base = super().status()
+        base.update({"session": self.session.status(), "market_status": self.market_status, "reconnects": self.reconnects})
+        return base

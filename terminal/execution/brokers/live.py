@@ -18,62 +18,56 @@ class KotakNeoBroker(Broker):
     name = "kotak_neo"
     live = True
 
-    def __init__(self, settings) -> None:
+    def __init__(self, settings, session, universe) -> None:
         super().__init__()
         self.s = settings
-        self._client = None
+        self.session = session
+        self.universe = universe
 
     async def connect(self) -> None:
-        s = self.s
-        if not all([s.neo_consumer_key, s.neo_mobile_number, s.neo_ucc, s.neo_mpin, s.neo_totp_secret]):
-            raise RuntimeError("KOTAK_CREDENTIALS_MISSING")
-        try:
-            from neo_api_client import NeoAPI  # type: ignore
-            import pyotp  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError("KOTAK_SDK_NOT_INSTALLED") from exc
-        loop = asyncio.get_running_loop()
-
-        def _login():
-            c = NeoAPI(consumer_key=s.neo_consumer_key, environment="prod", access_token=None, neo_fin_key=None)
-            c.login(mobilenumber=s.neo_mobile_number, ucc=s.neo_ucc, totp=pyotp.TOTP(s.neo_totp_secret).now())
-            c.session_2fa(OTP=s.neo_mpin)
-            return c
-
-        self._client = await loop.run_in_executor(None, _login)
+        await self.session.connect()
         self.connected = True
 
     async def place(self, order: Order, quote_lookup: QuoteLookup) -> Order:
-        if not self.connected or self._client is None:
+        if not self.session.authenticated:
             raise RuntimeError("BROKER_NOT_CONNECTED")
+        u = self.universe.get(order.underlying)
+        scrip = await self.session.resolve_option(u, order.expiry, order.strike, order.option_type)
+        if not scrip or not scrip.get("trading_symbol"):
+            order.status = OrderStatus.REJECTED
+            order.message = "KOTAK_TRADING_SYMBOL_NOT_FOUND"
+            return order
         seg = {"NSE": "nse_fo", "BSE": "bse_fo", "MCX": "mcx_fo"}[order.exchange.value]
-        loop = asyncio.get_running_loop()
         payload = dict(exchange_segment=seg, product="NRML", price=str(order.limit_price or 0), order_type="L" if order.order_type == OrderType.LIMIT else "MKT",
-                       quantity=str(order.quantity), validity="DAY", trading_symbol=order.symbol, transaction_type="B" if order.side == Side.BUY else "S", tag="AITERM")
-        resp = await loop.run_in_executor(None, lambda: self._client.place_order(**payload))
-        order.broker_order_id = str((resp or {}).get("nOrdNo") or (resp or {}).get("orderId") or "")
+                       quantity=str(order.quantity), validity="DAY", trading_symbol=scrip["trading_symbol"], transaction_type="B" if order.side == Side.BUY else "S", tag="AITERM")
+        resp = await self.session._call("place_order", **payload)
+        data = resp.get("data") if isinstance(resp, dict) and isinstance(resp.get("data"), dict) else (resp if isinstance(resp, dict) else {})
+        order.broker_order_id = str(data.get("nOrdNo") or data.get("orderId") or data.get("order_id") or "")
         order.status = OrderStatus.OPEN if order.broker_order_id else OrderStatus.REJECTED
         order.message = str(resp)[:300]
         order.updated_at = time.time()
         return order
 
     async def cancel(self, order: Order) -> Order:
-        if self._client is not None and order.broker_order_id:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: self._client.cancel_order(order_id=order.broker_order_id))
+        if order.broker_order_id:
+            await self.session._call("cancel_order", order_id=order.broker_order_id)
             order.status = OrderStatus.CANCELLED
+            order.updated_at = time.time()
         return order
 
     async def margins(self) -> Dict[str, float]:
-        if self._client is None:
-            return {}
-        loop = asyncio.get_running_loop()
         try:
-            lim = await loop.run_in_executor(None, lambda: self._client.limits(segment="ALL", exchange="ALL", product="ALL"))
-            return {"available": float(lim.get("Net", 0) or 0), "raw": lim}
+            lim = await self.session.limits()
+            data = lim.get("data", lim) if isinstance(lim, dict) else {}
+            return {"available": float(data.get("Net") or data.get("net") or 0), "raw": lim}
         except Exception as exc:
             self.last_error = str(exc)
             return {}
+
+    def status(self) -> dict:
+        base = super().status()
+        base["session"] = self.session.status()
+        return base
 
 
 class ZerodhaBroker(Broker):

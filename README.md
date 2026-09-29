@@ -66,6 +66,47 @@ Key variables:
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `SMTP_*` (optional alerts)
 - `API_AUTH_TOKEN` or `TERMINAL_USERS=name:password:role,...` (roles: viewer, trader, admin) — required for non-loopback binds
 
+## Connecting your Kotak Neo account (live market data)
+
+1. Install the broker SDK (kept optional so the simulator needs nothing):
+   ```bash
+   python -m pip install -r requirements-kotak.txt
+   ```
+2. In the Kotak Neo API portal create an app and copy its **consumer key**.
+   Enable TOTP in the Neo app and note the **TOTP secret** (the base32 key
+   shown when you set up the authenticator), your **UCC** (client code),
+   registered **mobile number** with country code and your **MPIN**.
+3. Put them in `.env` (never in chat, never in git):
+   ```text
+   DATA_SOURCE=kotak
+   NEO_CONSUMER_KEY=...
+   NEO_MOBILE_NUMBER=+91XXXXXXXXXX
+   NEO_UCC=...
+   NEO_MPIN=...
+   NEO_TOTP_SECRET=...
+   ```
+4. Verify the connection before starting the terminal:
+   ```bash
+   python scripts/kotak_check.py
+   ```
+   It logs in (TOTP + MPIN), resolves the index / futures tokens for every
+   underlying, fetches a sample option chain and streams ticks for 15 s. If
+   an instrument is not resolved or the chain layout is not parsed, the
+   script prints the raw sample so the mapping in `terminal/market/kotak.py`
+   can be adjusted.
+5. Start: `python -m terminal`. The *System* panel shows session state, the
+   resolved instruments, API call counts and live option-quote polls, with a
+   **Reconnect** button. Sessions expire daily; the feed supervisor re-logs
+   in automatically.
+
+What flows from Kotak: index / futures ticks over the SFeed WebSocket (NIFTY,
+BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX, BANKEX, INDIAVIX; MCX underlyings as
+the nearest future) and real option quotes (LTP, OI, volume, IV) polled from
+`option_chain` and overlaid on the model chain, so strikes, greeks, PCR and
+max-pain are computed from live prices. Trading stays on the **paper broker**
+until you also set `TRADING_ENV=LIVE`, `LIVE_TRADING=true`,
+`LIVE_ORDERS_ENABLED=true` and `BROKER=kotak`.
+
 ## Running
 
 ```bash
