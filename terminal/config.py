@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     neo_ucc: str = Field("", alias="NEO_UCC")
     neo_mpin: str = Field("", alias="NEO_MPIN")
     neo_totp_secret: str = Field("", alias="NEO_TOTP_SECRET")
+    neo_environment: str = Field("prod", alias="NEO_ENVIRONMENT")
+    kotak_chain_poll_seconds: float = Field(4.0, alias="KOTAK_CHAIN_POLL_SECONDS")
+    kotak_chain_underlyings: str = Field("", alias="KOTAK_CHAIN_UNDERLYINGS")  # blank = council focus list
     zerodha_api_key: str = Field("", alias="ZERODHA_API_KEY")
     zerodha_access_token: str = Field("", alias="ZERODHA_ACCESS_TOKEN")
 
