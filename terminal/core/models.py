@@ -126,6 +126,7 @@ class OptionQuote(BaseModel):
     oi: int
     oi_change: int
     volume: int
+    live: bool = False  # True when the price came from the broker feed (model price otherwise)
 
 
 class ChainRow(BaseModel):
@@ -151,6 +152,7 @@ class OptionChain(BaseModel):
     total_pe_oi: int
     iv_atm: float
     expected_move: float  # 1 sigma to expiry in points
+    live_rows: int = 0  # rows priced from broker quotes
 
     def find(self, strike: float, option_type: OptionType) -> OptionQuote | None:
         for r in self.rows:

@@ -28,9 +28,9 @@ def run_backtest(u: Underlying, strategy: str, days: int = 60, lots: int = 1, pa
     variance is realised intraday and the rest as the overnight gap."""
     if strategy not in SPECS:
         raise ValueError("UNKNOWN_STRATEGY")
-    p = {**SPECS[strategy].params, **(params or {})}
+    p = {**SPECS[strategy].params, **(params or {}), "allow_model_prices": True}
     rng = random.Random(seed)
-    builder = OptionChainBuilder(seed=seed)
+    builder = OptionChainBuilder()
     spot = u.base_spot
     daily_vol = (daily_vol_override or u.base_vol) / math.sqrt(252)
     implied_vol_pct = (daily_vol_override or u.base_vol) * iv_premium * 100.0

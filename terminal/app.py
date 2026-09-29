@@ -25,7 +25,7 @@ from terminal.execution.positions import PositionManager
 from terminal.execution.reconcile import OrderReconciler, PositionReconciler
 from terminal.market.angel import AngelOneSession
 from terminal.market.chain import OptionChainBuilder
-from terminal.market.feed import AngelOneFeed, KotakNeoFeed, MarketFeed, SimulatedFeed, ZerodhaFeed
+from terminal.market.feed import AngelOneFeed, KotakNeoFeed, MarketFeed, ZerodhaFeed
 from terminal.market.kotak import KotakNeoSession
 from terminal.market.processor import MarketDataProcessor
 from terminal.market.universe import VIX_SYMBOL, Universe
@@ -43,7 +43,8 @@ log = logging.getLogger("terminal")
 
 
 class Terminal:
-    def __init__(self, settings: Settings | None = None, seed: int | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, feed: MarketFeed | None = None) -> None:
+        """`feed` lets the test harness inject a scripted feed; production always uses the live provider."""
         self.settings = settings or get_settings()
         s = self.settings
         s.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -51,8 +52,8 @@ class Terminal:
         self.audit = AuditLog(s.runtime_dir / "audit.jsonl")
         self.db = Database(s.runtime_dir / "terminal.sqlite3")
         self.universe = Universe(s.runtime_dir, s.market_list)
-        self.processor = MarketDataProcessor()
-        self.chain_builder = OptionChainBuilder(seed=seed if seed is not None else int(time.time()) % 100000)
+        self.processor = MarketDataProcessor(candle_seconds=int(s.candle_seconds))
+        self.chain_builder = OptionChainBuilder()
         self.chains: Dict[str, OptionChain] = {}
         self._quotes: Dict[str, OptionQuote] = {}
         self.mode = TerminalMode(self.db.get_setting("terminal_mode", s.terminal_mode))
@@ -68,7 +69,6 @@ class Terminal:
         # feeds & broker: one live broker session (Kotak Neo or Zerodha Kite) shared by feed, chain poller and broker
         self.live = None  # KotakNeoSession | ZerodhaSession | None
         providers = {s.data_source.lower()} | ({s.broker.lower()} if self.env == TradingEnv.LIVE else set())
-        providers.discard("simulated")
         providers.discard("paper")
         if len(providers) > 1:
             raise RuntimeError(f"ONE_LIVE_PROVIDER_ONLY: DATA_SOURCE and BROKER must agree ({sorted(providers)})")
@@ -81,10 +81,12 @@ class Terminal:
         elif providers:
             raise RuntimeError(f"UNKNOWN_LIVE_PROVIDER: {sorted(providers)}")
         self.live_chain_stats = {"polls": 0, "quotes": 0, "errors": 0, "last_ts": 0.0, "last_error": ""}
-        self.feed: MarketFeed = self._make_feed(seed)
+        self.feed: MarketFeed = feed if feed is not None else self._make_feed()
+        self._tick_eval_last: Dict[str, float] = {}
+        self._tick_eval_pending = False
         self.broker: Broker = self._make_broker()
         # services
-        self.scheduler = Scheduler(s, sim_always_open=(s.data_source == "simulated" and s.sim_always_open))
+        self.scheduler = Scheduler(s)
         self.alerts = AlertEngine(self)
         self.positions = PositionManager(self)
         self.orders = OrderManager(self)
@@ -106,13 +108,13 @@ class Terminal:
         self.health = HealthMonitor(self)
         self._tasks: List[asyncio.Task] = []
         self._stop = asyncio.Event()
-        self._chain_refresh_seconds = 2.0 if s.data_source == "simulated" else 3.0
+        self._chain_refresh_seconds = 2.0
         self.feed.on_tick(self._on_tick)
         self.feed.on_option_quote(self._on_option_quote)
         self.audit.record("TERMINAL_INIT", {"version": __version__, "mode": self.mode.value, "env": self.env.value, "data_source": s.data_source, "broker": self.broker.name})
 
     # ------------------------------------------------------------- factories
-    def _make_feed(self, seed: int | None) -> MarketFeed:
+    def _make_feed(self) -> MarketFeed:
         s = self.settings
         if s.data_source.lower() == "kotak":
             return KotakNeoFeed(self.universe.all(), self.live)
@@ -120,7 +122,7 @@ class Terminal:
             return ZerodhaFeed(self.universe.all(), self.live)
         if s.data_source.lower() == "angel":
             return AngelOneFeed(self.universe.all(), self.live)
-        return SimulatedFeed(self.universe.all(), interval=s.tick_interval_seconds, speed=s.sim_speed, always_open=s.sim_always_open, seed=seed)
+        raise RuntimeError(f"UNKNOWN_DATA_SOURCE:{s.data_source} (live-only: kotak | zerodha | angel)")
 
     def _make_broker(self) -> Broker:
         s = self.settings
@@ -195,6 +197,8 @@ class Terminal:
             log.exception("recovery failed")
 
     async def _on_option_quote(self, symbol: str, fields: Dict) -> None:
+        """Every streamed option update is applied immediately: quote overlay, position mark,
+        and (throttled per symbol) stop-loss / target evaluation — no waiting for the 2 s chain loop."""
         q = {"ltp": fields.get("ltp", 0)}
         for k in ("oi", "volume", "bid", "ask", "oi_change"):
             if fields.get(k) is not None:
@@ -202,6 +206,23 @@ class Terminal:
         self.chain_builder.apply_broker_quotes({symbol: q})
         self.stream_stats["quotes"] += 1
         self.stream_stats["last_ts"] = time.time()
+        pos = self.positions.positions.get(symbol)
+        if pos is None or not q["ltp"]:
+            return
+        quote = self._quotes.get(symbol)
+        if quote is not None:
+            quote.ltp = float(q["ltp"])
+            quote.live = True
+        pos.ltp = float(q["ltp"])
+        pos.unrealized_pnl = round((pos.ltp - pos.avg_price) * pos.net_qty, 2)
+        now = time.time()
+        if now - self._tick_eval_last.get(symbol, 0.0) >= self.settings.tick_eval_min_interval_ms / 1000.0 and not self._tick_eval_pending:
+            self._tick_eval_last[symbol] = now
+            self._tick_eval_pending = True
+            try:
+                await self.strategies.monitor()
+            finally:
+                self._tick_eval_pending = False
 
     async def _stream_loop(self) -> None:
         """Keep held and near-ATM option contracts subscribed on the live WebSocket."""
@@ -473,7 +494,7 @@ class Terminal:
         vix = self.processor.last_tick(VIX_SYMBOL)
         return {
             "ts": time.time(), "product": PRODUCT, "version": __version__, "mode": self.mode.value, "env": self.env.value, "engine_running": self.engine_running, "paused": self.paused,
-            "live_allowed": self.settings.live_allowed, "feed": self.feed.status(), "broker": self.broker.status(), "data_source": self.settings.data_source,
+            "live_allowed": self.settings.live_allowed, "feed": self.feed.status(), "broker": self.broker.status(), "data_source": self.settings.data_source, "candle_seconds": self.processor.candle_seconds,
             "live_session": {**self.live.status(), "chain": self.live_chain_stats} if self.live else None, "vix": {"ltp": vix.ltp, "change_pct": vix.change_pct} if vix else None,
             "market": self.market_overview(), "risk": self.risk.describe(), "positions": self.positions.snapshot(), "orders": self.orders.recent(60),
             "pending_orders": [o.model_dump(mode="json") for o in self.orders.pending_approval()], "runs": [r.model_dump(mode="json") for r in self.strategies.runs.values() if r.status != "CLOSED"],

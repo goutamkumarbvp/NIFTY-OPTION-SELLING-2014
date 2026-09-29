@@ -61,7 +61,7 @@ def test_chain_builder_overlays_broker_quotes(tmp_path):
     from terminal.market.chain import OptionChainBuilder
     from terminal.market.universe import Universe
     u = Universe(tmp_path, ["NSE"]).get("NIFTY")
-    b = OptionChainBuilder(seed=5)
+    b = OptionChainBuilder()
     sym = b.option_symbol("NIFTY", "2026-10-06", 24800, "CE")
     assert sym == "NIFTY06OCT2624800CE"
     b.apply_broker_quotes({sym: {"ltp": 250.0, "oi": 4200000, "volume": 100, "oi_change": 5000}})

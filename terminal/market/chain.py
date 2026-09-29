@@ -1,29 +1,25 @@
-"""Option chain construction.
+"""Option chain construction (live-only).
 
-For the simulated / derived data path the chain is priced from the underlying
-spot with a volatility smile calibrated to the VIX level. Open interest is a
-persistent stochastic state so OI change, PCR and max-pain evolve realistically.
-When a broker feed supplies real option quotes they replace the model values
-through ``apply_broker_quotes``.
+Broker quotes (streamed or polled) are the source of truth for every strike:
+LTP, bid/ask, OI, volume and IV. Greeks and IV are computed from the live price.
+A strike with no live quote yet is priced by Black-Scholes as a *placeholder*
+(``live=False``) so greeks and expected move exist from the first second; such
+rows carry zero OI and no strategy leg may be built on them.
 """
 from __future__ import annotations
 
 import datetime as dt
 import math
-import random
 from typing import Dict, List
 
 from terminal.core.clock import expiry_series, now_ist, parse_hhmm, year_fraction_to_expiry
 from terminal.core.models import ChainRow, OptionChain, OptionQuote, OptionType, Underlying
 from terminal.market.pricing import bs_greeks, bs_price, implied_vol, round_to_tick
-from terminal.market.sim_oi import SimulatedOIModel
 
 
 class OptionChainBuilder:
-    def __init__(self, seed: int = 7, strikes_each_side: int = 25, oi_model: SimulatedOIModel | None = None) -> None:
-        self.rng = random.Random(seed)
+    def __init__(self, strikes_each_side: int = 25) -> None:
         self.strikes_each_side = strikes_each_side
-        self.oi_model = oi_model or SimulatedOIModel(seed)
         self._broker_quotes: Dict[str, dict] = {}
         self._last_spot: Dict[str, float] = {}
 
@@ -77,11 +73,11 @@ class OptionChainBuilder:
         # near expiry: weekly IV lifts (event/gamma premium)
         if days < 1.5:
             base_iv *= 1.10
-        spot_move = spot - self._last_spot.get(u.symbol, spot)
         self._last_spot[u.symbol] = spot
         rows: List[ChainRow] = []
         tot_ce_oi = tot_pe_oi = 0
         tot_ce_vol = tot_pe_vol = 0
+        live_rows = 0
         # window scales with the expected move so 10-20 delta strikes (and their wings)
         # are always inside the chain, even for monthly expiries on high-priced indices
         sigma_pts = spot * base_iv * math.sqrt(max(t, 1e-6))
@@ -96,10 +92,10 @@ class OptionChainBuilder:
             for ot in (OptionType.CE, OptionType.PE):
                 is_call = ot == OptionType.CE
                 iv = self._smile(strike / spot, base_iv, t)
-                key = (u.symbol, expiry, strike, ot.value)
                 sym = f"{u.symbol}{exp_date.strftime('%d%b%y').upper()}{int(strike)}{ot.value}"
                 bq = self._broker_quotes.get(sym)
-                if bq and float(bq.get("ltp", 0)) > 0:
+                live = bool(bq and float(bq.get("ltp", 0)) > 0)
+                if live:
                     ltp = float(bq.get("ltp", 0))
                     live_iv = float(bq.get("iv", 0) or 0)
                     if live_iv > 1.5:  # broker quotes IV in percent
@@ -111,18 +107,22 @@ class OptionChainBuilder:
                     vol = int(bq.get("volume", 0))
                     oi_change = int(bq.get("oi_change", 0))
                 else:
+                    # placeholder until the broker quote arrives: model price, no OI, not tradeable
                     ltp = bs_price(spot, strike, t, iv, is_call)
-                    oi, oi_change = self.oi_model.oi(key, i, not is_call, spot_move, in_window=abs(i) <= half)
-                    vol = self.oi_model.volume(oi, i)
+                    oi, oi_change, vol = 0, 0, 0
                 ltp = max(0.05, round_to_tick(ltp, u.tick_size))
                 g = bs_greeks(spot, strike, t, iv, is_call)
-                spread = max(u.tick_size, round_to_tick(ltp * (0.004 + 0.02 * abs(i) / self.strikes_each_side), u.tick_size))
-                bid = max(0.05, round_to_tick(ltp - spread / 2, u.tick_size))
-                ask = round_to_tick(ltp + spread / 2, u.tick_size)
+                if live and float(bq.get("bid", 0) or 0) > 0 and float(bq.get("ask", 0) or 0) > 0:
+                    bid, ask = float(bq["bid"]), float(bq["ask"])
+                else:
+                    spread = max(u.tick_size, round_to_tick(ltp * (0.004 + 0.02 * abs(i) / self.strikes_each_side), u.tick_size))
+                    bid = max(0.05, round_to_tick(ltp - spread / 2, u.tick_size))
+                    ask = round_to_tick(ltp + spread / 2, u.tick_size)
                 q = OptionQuote(symbol=sym, underlying=u.symbol, expiry=expiry, strike=strike, option_type=ot, ltp=ltp, bid=bid, ask=ask,
                                 iv=round(iv * 100, 2), delta=round(g["delta"], 4), gamma=round(g["gamma"], 6), theta=round(g["theta"], 2), vega=round(g["vega"], 2),
-                                oi=oi, oi_change=oi_change, volume=vol)
+                                oi=oi, oi_change=oi_change, volume=vol, live=live)
                 quotes[ot] = q
+                live_rows += 1 if live else 0
                 if is_call:
                     tot_ce_oi += oi
                     tot_ce_vol += vol
@@ -137,7 +137,7 @@ class OptionChainBuilder:
         expected_move = round(spot * (iv_atm / 100.0) * math.sqrt(max(t, 1e-6)), 1)
         return OptionChain(underlying=u.symbol, exchange=u.exchange, expiry=expiry, spot=spot, ts=now.timestamp(), atm_strike=atm, lot_size=u.lot_size,
                            days_to_expiry=round(days, 3), rows=rows, pcr=pcr, pcr_volume=pcr_vol, max_pain=self._max_pain(rows), total_ce_oi=tot_ce_oi,
-                           total_pe_oi=tot_pe_oi, iv_atm=iv_atm, expected_move=expected_move)
+                           total_pe_oi=tot_pe_oi, iv_atm=iv_atm, expected_move=expected_move, live_rows=live_rows)
 
     @staticmethod
     def _max_pain(rows: List[ChainRow], window: int = 30) -> float:
@@ -154,4 +154,4 @@ class OptionChainBuilder:
         return best
 
     def reset_day(self) -> None:
-        self.oi_model.reset_day()
+        self._broker_quotes.clear()

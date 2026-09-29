@@ -11,9 +11,11 @@ python -m pip install -r requirements.txt
 python -m terminal            # → http://127.0.0.1:8600
 ```
 
-Out of the box it runs on a realistic multi-market **simulator** with a paper
-broker, so every panel, agent and risk control works without credentials.
-Point `DATA_SOURCE=kotak` / `BROKER=kotak|zerodha` at real accounts when ready.
+The terminal is **live-data only**: it needs one broker feed (Kotak Neo by
+default, or Zerodha / Angel One) and consumes every tick the broker pushes at
+the broker's own resolution (Kotak SFeed updates are sub-second; nothing is
+sampled or simulated). Fills are simulated on the paper broker until the LIVE
+interlocks are switched on.
 
 ---
 
@@ -27,6 +29,7 @@ Point `DATA_SOURCE=kotak` / `BROKER=kotak|zerodha` at real accounts when ready.
 | **Risk manager** | Pre-trade gates on every order (gate, kill switch, session, lots, positions, per-market lots, margin, daily loss, feed freshness, LIVE interlock) and a 1-second portfolio monitor that **halts and flattens** on breach. |
 | **Execution** | Paper broker with bid/ask crossing, slippage and full Indian option charges; Kotak Neo, Zerodha Kite and Angel One SmartAPI live data + order adapters (fail closed without credentials). |
 | **Markets** | NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY (NSE) · SENSEX, BANKEX (BSE) · CRUDEOIL, NATURALGAS, GOLD, SILVER (MCX) with correct expiry weekdays and sessions. |
+| **Tick resolution** | Every broker update is processed as it arrives; stop-loss / target checks run on each option tick (throttled to `TICK_EVAL_MIN_INTERVAL_MS`), indicators use `CANDLE_SECONDS` bars and 1-second bars are available on demand; the dashboard shows the measured tick interval. |
 | **Ops** | SQLite persistence, tamper-evident audit trail, alerts to dashboard / Telegram / e-mail, health monitor, feed supervisor with auto-reconnect, role-based auth. |
 
 ## What the AI layer does (V30.1)
@@ -193,12 +196,11 @@ python -m pytest -q                # test-suite
 
 Interactive API docs: `http://127.0.0.1:8600/api/docs`.
 
-## Testing the safety controls in simulation
+## Testing the safety controls
 
-Open *Risk Control → Simulation stress test*, inject a `-3%` shock on NIFTY or
-`+30%` on INDIAVIX and watch the Sentinel veto / protect, or lower *max daily
-loss* and see the risk manager halt and flatten. The audit trail records every
-step.
+The test suite drives the whole terminal through a scripted feed (`tests/fakefeed.py`)
+and a fake live broker: stop-loss layers, retries, halts, kill switch, reconciliation
+and end-of-day square-off are all exercised without a market. Run `python -m pytest -q`.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design, data
 flow and extension points. The previous V27.5 codebase is preserved in

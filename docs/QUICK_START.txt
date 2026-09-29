@@ -6,12 +6,15 @@ Requirements: Python 3.11 or newer (https://www.python.org/downloads/), any OS.
 
 1. Unzip this folder anywhere.
 
-2. Start (paper trading on the built-in market simulator — no account needed):
+2. Put your broker credentials in .env first (copy .env.paper → .env, fill NEO_* for Kotak).
+   The terminal is LIVE-DATA ONLY: it will not start without a broker feed.
+   Then start (live prices, paper fills, no real orders):
      Windows :  double-click  scripts\start_terminal.bat
      Mac/Linux:  bash scripts/start_terminal.sh
-   This creates a virtual environment, installs dependencies, copies .env.example
-   to .env and starts the server. The preflight banner shows exactly which
-   interlocks and providers are active.
+   This creates a virtual environment, installs dependencies (including the Kotak
+   Neo SDK) and starts the server. The preflight banner shows exactly which
+   interlocks and providers are active. Ticks are consumed at the broker's own
+   resolution (Kotak SFeed: sub-second); the sidebar shows the measured interval.
 
 3. Open  http://127.0.0.1:8600  in your browser.
    - Click "Open Gate" to allow entries.

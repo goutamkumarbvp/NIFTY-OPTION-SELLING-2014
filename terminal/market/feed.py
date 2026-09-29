@@ -1,24 +1,19 @@
-"""Market data feeds.
+"""Live market data feeds (Kotak Neo SFeed, Zerodha KiteTicker, Angel One SmartWebSocketV2).
 
-* ``SimulatedFeed`` – a realistic multi-market simulator (regime switching GBM
-  with intraday seasonality, jumps and a VIX process). It lets the whole terminal
-  (agents, risk, execution) run end-to-end without any broker credentials.
-* ``KotakNeoFeed`` – adapter skeleton for the Kotak Neo API; activated only when
-  credentials are configured and the SDK is importable.
+The terminal is live-only: every feed is event-driven and forwards each tick or
+quote update the broker pushes, with no sampling. ``MarketFeed`` measures the
+observed inter-tick interval per symbol so the dashboard can show the actual
+resolution the broker delivers (Kotak SFeed updates are sub-second).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
-import random
 import time
 from abc import ABC, abstractmethod
 from typing import Awaitable, Callable, Dict, List
 
-from terminal.core.clock import now_ist
 from terminal.core.models import Tick, Underlying
-from terminal.market.universe import VIX_SYMBOL
 
 log = logging.getLogger("terminal.feed")
 
@@ -34,6 +29,10 @@ class MarketFeed(ABC):
         self.last_tick_ts: float = 0.0
         self.tick_count = 0
         self.errors = 0
+        self.option_count = 0
+        self._last_by_symbol: Dict[str, float] = {}
+        self._interval_ema: Dict[str, float] = {}  # observed seconds between updates, per symbol
+        self._min_interval: float = 0.0
 
     def on_tick(self, handler: TickHandler) -> None:
         self._handlers.append(handler)
@@ -44,6 +43,10 @@ class MarketFeed(ABC):
         self._option_handlers.append(handler)
 
     async def _emit_option(self, symbol: str, fields: Dict) -> None:
+        now = time.time()
+        self.last_tick_ts = now
+        self.option_count += 1
+        self._observe(symbol, now)
         for h in getattr(self, "_option_handlers", []):
             try:
                 await h(symbol, fields)
@@ -57,9 +60,25 @@ class MarketFeed(ABC):
     def streamed_options(self) -> int:
         return len(getattr(self, "_option_tokens", {}))
 
+    def _observe(self, key: str, ts: float) -> None:
+        prev = self._last_by_symbol.get(key)
+        self._last_by_symbol[key] = ts
+        if prev is not None and ts > prev:
+            dt = ts - prev
+            ema = self._interval_ema.get(key)
+            self._interval_ema[key] = dt if ema is None else 0.9 * ema + 0.1 * dt
+            self._min_interval = dt if not self._min_interval else min(self._min_interval, dt)
+
+    def tick_resolution(self) -> Dict[str, float]:
+        """Observed update interval statistics (seconds)."""
+        vals = list(self._interval_ema.values())
+        return {"median_interval_s": round(sorted(vals)[len(vals) // 2], 3) if vals else None, "min_interval_s": round(self._min_interval, 4) if self._min_interval else None,
+                "symbols": len(vals), "per_symbol_ms": {k: round(v * 1000, 1) for k, v in sorted(self._interval_ema.items())[:20]}}
+
     async def _emit(self, tick: Tick) -> None:
         self.last_tick_ts = tick.ts
         self.tick_count += 1
+        self._observe(tick.symbol, tick.ts)
         for h in self._handlers:
             try:
                 await h(tick)
@@ -85,124 +104,10 @@ class MarketFeed(ABC):
             "connected": self.connected,
             "last_tick_age": round(time.time() - self.last_tick_ts, 2) if self.last_tick_ts else None,
             "ticks": self.tick_count,
+            "option_quotes": self.option_count,
             "errors": self.errors,
+            "resolution": self.tick_resolution(),
         }
-
-
-class _SimSeries:
-    """One simulated underlying: GBM + mean-reverting vol + jumps."""
-
-    def __init__(self, u: Underlying, seed: int) -> None:
-        self.u = u
-        self.rng = random.Random(seed)
-        self.price = u.base_spot * (1 + self.rng.uniform(-0.004, 0.004))
-        self.prev_close = u.base_spot
-        self.open = self.price
-        self.high = self.price
-        self.low = self.price
-        self.vol = u.base_vol
-        self.drift_regime = 0.0
-        self.volume = 0
-        self.regime_ttl = 0
-
-    def step(self, dt_seconds: float, vix_level: float) -> float:
-        # regime switching drift (trend / range) every few minutes
-        if self.regime_ttl <= 0:
-            self.regime_ttl = self.rng.randint(120, 900)
-            self.drift_regime = self.rng.choice([-1.0, -0.4, 0.0, 0.0, 0.4, 1.0]) * self.u.base_vol * 2.5
-        self.regime_ttl -= dt_seconds
-        # vol mean reverts toward VIX implied level for indices, own base for commodities
-        target = self.u.base_vol * (vix_level / 13.0) if self.u.exchange.value != "MCX" else self.u.base_vol
-        self.vol += (target - self.vol) * 0.02 + self.rng.gauss(0, 0.002)
-        self.vol = max(0.06, min(self.vol, 0.9))
-        dt = dt_seconds / (252 * 6.25 * 3600)
-        z = self.rng.gauss(0, 1)
-        jump = 0.0
-        if self.rng.random() < dt_seconds * 0.00025:  # rare jump
-            jump = self.rng.choice([-1, 1]) * self.rng.uniform(0.002, 0.008)
-        ret = (self.drift_regime - 0.5 * self.vol ** 2) * dt + self.vol * math.sqrt(dt) * z + jump
-        self.price *= math.exp(ret)
-        self.high = max(self.high, self.price)
-        self.low = min(self.low, self.price)
-        self.volume += int(abs(z) * 900 + 100)
-        return self.price
-
-    def new_day(self) -> None:
-        self.prev_close = self.price
-        self.open = self.price
-        self.high = self.price
-        self.low = self.price
-        self.volume = 0
-
-
-class SimulatedFeed(MarketFeed):
-    name = "simulated"
-
-    def __init__(self, universe: List[Underlying], interval: float = 1.0, speed: float = 1.0, always_open: bool = True, seed: int | None = None) -> None:
-        super().__init__()
-        self.interval = max(0.1, interval)
-        self.speed = max(0.1, speed)
-        self.always_open = always_open
-        base_seed = seed if seed is not None else int(time.time())
-        self.series: Dict[str, _SimSeries] = {u.symbol: _SimSeries(u, base_seed + i * 7919) for i, u in enumerate(universe)}
-        self.vix = 13.0 + random.Random(base_seed).uniform(-1.5, 2.5)
-        self.vix_prev_close = self.vix
-        self._task: asyncio.Task | None = None
-        self._stop = asyncio.Event()
-        self._day = now_ist().date()
-        self.rng = random.Random(base_seed ^ 0xABCDEF)
-
-    async def start(self) -> None:
-        if self._task and not self._task.done():
-            return
-        self._stop = asyncio.Event()
-        self.connected = True
-        self._task = asyncio.create_task(self._run(), name="sim-feed")
-        log.info("simulated feed started (%d instruments)", len(self.series))
-
-    async def stop(self) -> None:
-        self.connected = False
-        self._stop.set()
-        if self._task:
-            try:
-                await asyncio.wait_for(self._task, timeout=2)
-            except (TimeoutError, asyncio.CancelledError):
-                self._task.cancel()
-        self._task = None
-
-    def shock(self, symbol: str, pct: float) -> None:
-        """Test hook: instantly move an underlying by pct (e.g. -3.0)."""
-        s = self.series.get(symbol.upper())
-        if s:
-            s.price *= 1 + pct / 100.0
-            s.high, s.low = max(s.high, s.price), min(s.low, s.price)
-        if symbol.upper() == VIX_SYMBOL:
-            self.vix *= 1 + pct / 100.0
-
-    async def _run(self) -> None:
-        while not self._stop.is_set():
-            t0 = time.time()
-            today = now_ist().date()
-            if today != self._day:
-                self._day = today
-                for s in self.series.values():
-                    s.new_day()
-                self.vix_prev_close = self.vix
-            dt_s = self.interval * self.speed
-            # VIX: mean reverting around 13.5 with occasional spikes
-            self.vix += (13.5 - self.vix) * 0.0015 * dt_s + self.rng.gauss(0, 0.03) * math.sqrt(dt_s)
-            if self.rng.random() < dt_s * 0.00008:
-                self.vix *= 1 + self.rng.uniform(0.05, 0.18)
-            self.vix = max(8.0, min(self.vix, 60.0))
-            await self._emit(Tick(symbol=VIX_SYMBOL, ltp=round(self.vix, 2), change_pct=round((self.vix / self.vix_prev_close - 1) * 100, 2), prev_close=self.vix_prev_close))
-            for s in self.series.values():
-                price = s.step(dt_s, self.vix)
-                await self._emit(Tick(symbol=s.u.symbol, ltp=round(price, 2), change_pct=round((price / s.prev_close - 1) * 100, 2), open=round(s.open, 2), high=round(s.high, 2), low=round(s.low, 2), prev_close=round(s.prev_close, 2), volume=s.volume))
-            elapsed = time.time() - t0
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=max(0.02, self.interval - elapsed))
-            except TimeoutError:
-                pass
 
 
 class KotakNeoFeed(MarketFeed):

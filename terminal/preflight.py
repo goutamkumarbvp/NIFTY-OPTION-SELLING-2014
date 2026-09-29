@@ -21,7 +21,7 @@ def check(s: Settings) -> Tuple[List[str], List[str]]:
     else:
         info.append("live order flow OFF (paper broker) — interlocks on: " + (", ".join(on) or "none"))
     providers = {s.data_source.lower()} | ({s.broker.lower()} if s.trading_env == "LIVE" else set())
-    providers -= {"simulated", "paper"}
+    providers -= {"paper"}
     if len(providers) > 1:
         fatal.append(f"DATA_SOURCE and BROKER name different live providers: {sorted(providers)}")
     for prov in providers:
@@ -34,7 +34,10 @@ def check(s: Settings) -> Tuple[List[str], List[str]]:
         else:
             fatal.append(f"unknown live provider {prov}")
             continue
-        info.append(f"provider {prov}: " + ("credentials present" if not missing else "MISSING " + ", ".join(missing) + " (feed will stay down, entries blocked)"))
+        if missing:
+            fatal.append(f"provider {prov}: missing " + ", ".join(missing) + " — the terminal is live-data only and cannot start without them")
+        else:
+            info.append(f"provider {prov}: credentials present · live ticks at broker resolution (every update processed, no sampling)")
     if not s.is_loopback and not (s.api_auth_token or s.users):
         fatal.append("non-loopback BIND_HOST requires API_AUTH_TOKEN or TERMINAL_USERS")
     if s.live_allowed and s.terminal_mode == "AUTO" and s.safety_gate_open_on_start:

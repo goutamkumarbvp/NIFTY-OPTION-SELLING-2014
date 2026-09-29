@@ -137,15 +137,11 @@ async def test_telegram_commands(terminal):
 # ---------------------------------------------------------------- HTTP: metrics + insights + copilot
 async def test_metrics_and_insight_routes():
     from terminal.api.app import create_app
-    from terminal.app import Terminal
-    from tests.conftest import make_settings
-    t = Terminal(settings=make_settings(), seed=21)
+    from tests.conftest import make_settings, make_terminal, wait_live
+    t = make_terminal(make_settings(), seed=21)
     app = create_app(t)
     async with app.router.lifespan_context(app):
-        for _ in range(50):
-            await asyncio.sleep(0.1)
-            if t.chains:
-                break
+        await wait_live(t)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             m = (await c.get("/metrics")).text
             assert "terminal_up 1" in m and 'terminal_spot{symbol="NIFTY"' in m

@@ -5,8 +5,8 @@ pydantic-settings>=2.3
 websockets>=12
 httpx>=0.27
 anthropic>=0.40
+# Kotak Neo is the default live data provider (the terminal is live-data only)
+kotakneoapi==3.0.6
+pyotp>=2.9
 
-# Optional broker SDKs (only needed for DATA_SOURCE=kotak / BROKER=kotak|zerodha)
-# kotakneoapi>=3.0.6
-# pyotp>=2.9
-# kiteconnect>=5.0
+# Other providers: requirements-zerodha.txt / requirements-angel.txt

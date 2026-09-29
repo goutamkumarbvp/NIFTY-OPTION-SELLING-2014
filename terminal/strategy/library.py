@@ -55,6 +55,8 @@ def build_legs(key: str, chain: OptionChain, lots: int, params: Dict[str, float]
         q = chain.find(strike, ot)
         if q is None:
             raise ValueError(f"STRIKE_NOT_IN_CHAIN:{strike}{ot.value}")
+        if not q.live and not p.get("allow_model_prices"):
+            raise ValueError(f"NO_LIVE_QUOTE:{q.symbol}")
         return Leg(option_type=ot, side=side, strike=strike, lots=lots, symbol=q.symbol, entry_price=q.ltp, ltp=q.ltp, expiry=exp)
 
     atm = chain.atm_strike

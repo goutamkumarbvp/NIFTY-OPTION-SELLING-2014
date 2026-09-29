@@ -38,13 +38,12 @@ class Settings(BaseSettings):
     protect_in_manual: bool = Field(True, alias="PROTECT_IN_MANUAL")  # sentinel may flatten in MANUAL
     manual_confirmation_for_agent_orders: bool = Field(True, alias="MANUAL_CONFIRMATION_FOR_AGENT_ORDERS")
 
-    # --- market data -------------------------------------------------------
-    data_source: str = Field("simulated", alias="DATA_SOURCE")  # simulated | kotak | zerodha | angel
+    # --- market data (live only) -------------------------------------------
+    data_source: str = Field("kotak", alias="DATA_SOURCE")  # kotak | zerodha | angel
     markets: str = Field("NSE,BSE,MCX", alias="MARKETS")
-    sim_speed: float = Field(1.0, alias="SIM_SPEED")  # simulation time multiplier
-    sim_always_open: bool = Field(True, alias="SIM_ALWAYS_OPEN")  # keep simulated market open 24x7
-    tick_interval_seconds: float = Field(1.0, alias="TICK_INTERVAL_SECONDS")
     feed_stale_seconds: float = Field(8.0, alias="FEED_STALE_SECONDS")
+    candle_seconds: int = Field(60, alias="CANDLE_SECONDS")  # indicator candle size; ticks are consumed at full resolution regardless
+    tick_eval_min_interval_ms: int = Field(100, alias="TICK_EVAL_MIN_INTERVAL_MS")  # stop-loss re-evaluation throttle per symbol
 
     # --- broker ------------------------------------------------------------
     broker: str = Field("paper", alias="BROKER")  # paper | kotak | zerodha | angel
@@ -126,6 +125,14 @@ class Settings(BaseSettings):
         v = v.strip().upper()
         if v not in {"MANUAL", "AUTO"}:
             raise ValueError("TERMINAL_MODE must be MANUAL or AUTO")
+        return v
+
+    @field_validator("data_source")
+    @classmethod
+    def _source(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in {"kotak", "zerodha", "angel"}:
+            raise ValueError("DATA_SOURCE must be kotak, zerodha or angel (the terminal is live-data only)")
         return v
 
     @field_validator("trading_env")

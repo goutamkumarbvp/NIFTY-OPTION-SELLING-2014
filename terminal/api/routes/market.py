@@ -1,16 +1,10 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
 
 from terminal.api.deps import ok, require, terminal
 
 router = APIRouter(prefix="/api/market", tags=["market"])
-
-
-class ShockBody(BaseModel):
-    symbol: str
-    pct: float
 
 
 @router.get("/overview")
@@ -32,9 +26,19 @@ async def chain(request: Request, underlying: str = "NIFTY", expiry: str | None 
 
 
 @router.get("/candles")
-async def candles(request: Request, symbol: str = "NIFTY", limit: int = 200, user: dict = Depends(require("viewer"))):
+async def candles(request: Request, symbol: str = "NIFTY", limit: int = 200, seconds: int | None = None, user: dict = Depends(require("viewer"))):
+    """Candles at the base resolution or rebuilt from raw ticks at `seconds` (1 = one-second bars)."""
     t = terminal(request)
-    return ok({"symbol": symbol.upper(), "candles": [c.model_dump() for c in t.processor.candles(symbol.upper(), limit)], "indicators": t.processor.indicators(symbol.upper())})
+    return ok({"symbol": symbol.upper(), "seconds": seconds or t.processor.candle_seconds, "candles": [c.model_dump() for c in t.processor.candles(symbol.upper(), limit, seconds)],
+               "indicators": t.processor.indicators(symbol.upper()), "resolution": t.feed.tick_resolution()})
+
+
+@router.get("/ticks")
+async def ticks(request: Request, symbol: str = "NIFTY", limit: int = 500, user: dict = Depends(require("viewer"))):
+    """Raw tick stream as received from the broker (newest last)."""
+    t = terminal(request)
+    st = t.processor.symbols.get(symbol.upper())
+    return ok({"symbol": symbol.upper(), "ticks": [x.model_dump() for x in list(st.ticks)[-limit:]] if st else [], "resolution": t.feed.tick_resolution()})
 
 
 @router.get("/expiries")
@@ -46,14 +50,3 @@ async def expiries(request: Request, underlying: str = "NIFTY", user: dict = Dep
 @router.get("/universe")
 async def universe(request: Request, user: dict = Depends(require("viewer"))):
     return ok([u.model_dump(mode="json") for u in terminal(request).universe.all()])
-
-
-@router.post("/shock")
-async def shock(body: ShockBody, request: Request, user: dict = Depends(require("admin"))):
-    """Simulation-only: inject a spot/VIX shock to exercise risk controls."""
-    t = terminal(request)
-    if not hasattr(t.feed, "shock"):
-        raise ValueError("SHOCK_ONLY_IN_SIMULATION")
-    t.feed.shock(body.symbol, body.pct)
-    t.audit.record("SIM_SHOCK", body.model_dump(), user["username"])
-    return ok({"symbol": body.symbol, "pct": body.pct})
