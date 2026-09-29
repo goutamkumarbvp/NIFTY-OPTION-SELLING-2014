@@ -3,6 +3,8 @@ strongly favour deploying an option-selling structure now"."""
 from __future__ import annotations
 
 import datetime as dt
+import math
+import random
 from typing import List
 
 from terminal.agents.base import Agent, Assessment, MarketContext
@@ -203,11 +205,68 @@ class SentinelAgent(Agent):
         if not self.t.broker.connected:
             findings.append("Broker not connected")
             veto = True
+        # order-flow anomalies: OI unwind, bid-ask blowout, cross-market divergence
+        for f, severity in self._flow_anomalies(ctx):
+            findings.append(f)
+            if severity == "veto":
+                veto = True
+            else:
+                score -= 0.3
         if not findings:
             findings.append("No anomalies. Feed fresh, broker connected, risk within limits.")
         stance = "PROTECT" if protect else ("VETO" if veto else "CLEAR")
         return Assessment(agent=self.name, role=self.role, stance=stance, score=_clamp(-1.0 if veto else score), confidence=0.95, findings=findings, veto=veto,
                           data={"protect": protect, "sigma_move": sm, "vix_change_pct": vix_chg})
+
+
+    def _flow_anomalies(self, ctx: MarketContext):
+        out = []
+        ch = ctx.chain
+        hist = ctx.pcr_history or []
+        if ch is not None and len(hist) >= 6:
+            ref = hist[-6]
+            total_now = ch.total_ce_oi + ch.total_pe_oi
+            total_ref = ref.get("total_oi")
+            if total_ref and total_now < total_ref * 0.92:
+                out.append((f"OI unwind: total OI down {(1 - total_now / total_ref) * 100:.1f}% in ~{len(hist[-6:]) * 10 // 60 + 1} min", "warn"))
+            if abs(ch.pcr - ref["pcr"]) > 0.25:
+                out.append((f"PCR jumped {ref['pcr']:.2f} → {ch.pcr:.2f}: positioning flip", "warn"))
+        if ch is not None:
+            atm = next((r for r in ch.rows if r.strike == ch.atm_strike), None)
+            if atm:
+                sp = (atm.ce.ask - atm.ce.bid) / max(atm.ce.ltp, 0.05) * 100
+                if sp > 12:
+                    out.append((f"Bid-ask blowout at ATM ({sp:.0f}% of premium): liquidity vacuum", "veto"))
+                elif sp > 6:
+                    out.append((f"Wide ATM spread {sp:.0f}%", "warn"))
+        # cross-market divergence: index vs its sector peer over 5 minutes
+        peer = {"NIFTY": "BANKNIFTY", "BANKNIFTY": "NIFTY", "SENSEX": "BANKEX", "BANKEX": "SENSEX"}.get(ctx.underlying)
+        if peer and self.t.universe.has(peer):
+            a = self.t.processor.indicators(ctx.underlying).get("ret_5m_pct")
+            b = self.t.processor.indicators(peer).get("ret_5m_pct")
+            if a is not None and b is not None and abs(a - b) > 0.6:
+                out.append((f"Cross-market divergence: {ctx.underlying} {a:+.2f}% vs {peer} {b:+.2f}% (5m)", "warn"))
+        return out
+
+
+class LearnedModelAgent(Agent):
+    name = "LearnedModel"
+    role = "Online logistic model: P(next window is seller-friendly) trained on scored council decisions"
+    weight = 0.8
+
+    async def assess(self, ctx: MarketContext) -> Assessment:
+        model = getattr(self.t, "entry_model", None)
+        if model is None:
+            return Assessment(agent=self.name, role=self.role, stance="NO_MODEL", score=0.0, confidence=0.0)
+        from terminal.analytics.evaluation import features_for
+        p = model.predict(features_for(ctx, []))
+        n = model.model.n
+        if p is None:
+            return Assessment(agent=self.name, role=self.role, stance="NO_FEATURES", score=0.0, confidence=0.0, findings=["features unavailable"])
+        conf = min(0.9, 0.15 + 0.75 * (1 - math.exp(-n / 60.0)))  # grows with samples
+        stance = "SELLER_FRIENDLY" if p > 0.6 else ("HOSTILE" if p < 0.4 else "NEUTRAL")
+        findings = [f"P(seller-friendly next {self.t.settings.decision_score_minutes} min) = {p:.2f} from {n} scored decisions", f"loss (ema) {model.model.loss_ema:.3f}" if model.model.loss_ema else "untrained: prior 0.5"]
+        return Assessment(agent=self.name, role=self.role, stance=stance, score=_clamp((p - 0.5) * 2), confidence=round(conf, 2), findings=findings, data={"p": round(p, 3), "n": n})
 
 
 class RiskAgent(Agent):
@@ -266,6 +325,8 @@ class StrategySelectorAgent(Agent):
         naked_ok = bool(self.t.risk.limits.get("naked_short_allowed", 1))
         defined_bias = 0.15 if (ctx.is_expiry_day or ctx.risk.loss_budget_used_pct > 40 or not naked_ok) else 0.0
 
+        rng = random.Random(int(ctx.ts))
+
         def add(key: str, base: float, why: str) -> None:
             if not enabled.get(key, True):
                 return
@@ -273,12 +334,15 @@ class StrategySelectorAgent(Agent):
             sp = SPECS[key]
             if not naked_ok and not sp.defined_risk:
                 return
+            # contextual bandit: Thompson sample from the Beta posterior of this strategy's
+            # win rate in the current regime (prior 2/2), so proven structures are favoured
+            # while under-tested ones still get explored
             hist = stats.get(f"{key}:{regime}") or stats.get(key) or {}
-            wr = hist.get("win_rate")
-            n = hist.get("n", 0)
-            learn = ((wr - 0.5) * 0.6) if wr is not None and n >= 3 else 0.0
+            wins, n = int(hist.get("wins", 0)), int(hist.get("n", 0))
+            sample = rng.betavariate(2 + wins, 2 + max(0, n - wins))
+            learn = (sample - 0.5) * 0.6
             score = base + (defined_bias if sp.defined_risk else 0.0) + learn
-            candidates.append((score, key, why + (f"; learned win-rate {wr:.0%} over {n} trades" if wr is not None and n >= 3 else "")))
+            candidates.append((score, key, why + (f"; posterior win-rate {sample:.0%} over {n} trades" if n else "; unexplored (posterior sample)")))
 
         if regime == "RANGE":
             add("short_strangle", 0.75 + 0.2 * vol_ok, "range regime: harvest theta both sides at ~15Δ")

@@ -13,7 +13,18 @@ from typing import Dict, List
 
 from terminal.agents.base import Agent, MarketContext
 from terminal.agents.llm import LLMGateway
-from terminal.agents.specialists import EventRiskAgent, ExecutionAgent, MarketAnalystAgent, OptionsFlowAgent, ReviewAgent, RiskAgent, SentinelAgent, StrategySelectorAgent, VolatilityAgent
+from terminal.agents.specialists import (
+    EventRiskAgent,
+    ExecutionAgent,
+    LearnedModelAgent,
+    MarketAnalystAgent,
+    OptionsFlowAgent,
+    ReviewAgent,
+    RiskAgent,
+    SentinelAgent,
+    StrategySelectorAgent,
+    VolatilityAgent,
+)
 from terminal.core.models import Assessment, CouncilDecision, OrderSource, TerminalMode, TradePlan
 
 log = logging.getLogger("terminal.council")
@@ -23,7 +34,7 @@ class Council:
     def __init__(self, terminal) -> None:
         self.t = terminal
         self.agents: List[Agent] = [MarketAnalystAgent(terminal), VolatilityAgent(terminal), OptionsFlowAgent(terminal), EventRiskAgent(terminal), SentinelAgent(terminal),
-                                    RiskAgent(terminal), StrategySelectorAgent(terminal), ExecutionAgent(terminal), ReviewAgent(terminal)]
+                                    RiskAgent(terminal), LearnedModelAgent(terminal), StrategySelectorAgent(terminal), ExecutionAgent(terminal), ReviewAgent(terminal)]
         self.llm = LLMGateway(terminal.settings)
         self.decisions: List[CouncilDecision] = []
         self.last_brief: Dict[str, str] = {}
@@ -88,7 +99,7 @@ class Council:
         ctx = self.build_context(underlying)
         active = [a for a in self.agents if a.enabled]
         # stage 1: independent analysts run concurrently
-        stage1 = [a for a in active if a.name in ("MarketAnalyst", "VolatilityAgent", "OptionsFlow", "EventRisk", "Sentinel", "RiskGuardian", "PostTradeReviewer")]
+        stage1 = [a for a in active if a.name in ("MarketAnalyst", "VolatilityAgent", "OptionsFlow", "EventRisk", "Sentinel", "RiskGuardian", "PostTradeReviewer", "LearnedModel")]
         results = await asyncio.gather(*(a.run(ctx) for a in stage1))
         by_name = {r.agent: r for r in results}
         # share findings with the selector / execution agents
@@ -100,7 +111,7 @@ class Council:
         assessments = list(results) + list(results2)
         votes = {a.agent: a.score for a in assessments}
         weights = {a.name: a.weight for a in active}
-        voting = [a for a in assessments if a.agent not in ("PostTradeReviewer",) and a.stance not in ("ERROR", "WARMING_UP", "NO_CHAIN")]
+        voting = [a for a in assessments if a.agent not in ("PostTradeReviewer",) and a.stance not in ("ERROR", "WARMING_UP", "NO_CHAIN", "NO_MODEL", "NO_FEATURES")]
         wsum = sum(weights.get(a.agent, 1.0) * a.confidence for a in voting) or 1.0
         consensus = sum(weights.get(a.agent, 1.0) * a.confidence * a.score for a in voting) / wsum
         confidence = sum(a.confidence for a in voting) / len(voting) if voting else 0.0
@@ -180,6 +191,8 @@ class Council:
                              plan_id=plan.id if plan else None, summary=summary)
         self.decisions.append(cd)
         self.decisions = self.decisions[-200:]
+        if getattr(self.t, "evaluator", None) is not None:
+            self.t.evaluator.record(cd, ctx, assessments)
         # persist every actionable decision, and a periodic HOLD sample to keep the DB lean
         if decision != "HOLD" or self.cycle % 30 == 0:
             self.t.db.save_council(cd.model_dump(mode="json"))

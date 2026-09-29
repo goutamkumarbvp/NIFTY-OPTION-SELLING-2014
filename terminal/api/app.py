@@ -11,12 +11,12 @@ from fastapi.staticfiles import StaticFiles
 
 from terminal import PRODUCT, __version__
 from terminal.api.auth import AuthManager
-from terminal.api.routes import agents, auth, broker, control, market, reports, risk, strategy, system, trading, ws
+from terminal.api.routes import agents, auth, broker, control, copilot, insights, market, metrics, reports, risk, strategy, system, trading, ws
 from terminal.app import Terminal, get_terminal, set_terminal
 
 log = logging.getLogger("terminal.api")
 UI_DIR = Path(__file__).resolve().parent.parent / "ui"
-ROUTERS = [auth.router, control.router, market.router, strategy.router, trading.router, agents.router, risk.router, reports.router, system.router, broker.router, ws.router]
+ROUTERS = [auth.router, control.router, market.router, strategy.router, trading.router, agents.router, risk.router, reports.router, system.router, broker.router, copilot.router, insights.router, metrics.router, ws.router]
 
 
 def create_app(terminal: Terminal | None = None) -> FastAPI:

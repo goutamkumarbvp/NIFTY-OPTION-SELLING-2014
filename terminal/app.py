@@ -7,7 +7,11 @@ import time
 from typing import Dict, List, Set
 
 from terminal import PRODUCT, __version__
+from terminal.agents.copilot import Copilot
+from terminal.agents.journal import Journal
 from terminal.agents.orchestrator import Council
+from terminal.analytics.evaluation import CouncilEvaluator
+from terminal.analytics.models import EntryQualityModel
 from terminal.config import Settings, get_settings
 from terminal.core.audit import AuditLog
 from terminal.core.bus import EventBus
@@ -27,7 +31,9 @@ from terminal.market.processor import MarketDataProcessor
 from terminal.market.universe import VIX_SYMBOL, Universe
 from terminal.market.zerodha import ZerodhaSession
 from terminal.monitoring.health import HealthMonitor
+from terminal.monitoring.metrics import Metrics
 from terminal.notifications.alerts import AlertEngine
+from terminal.notifications.telegram import TelegramCommands
 from terminal.risk.manager import RiskManager
 from terminal.storage.db import Database
 from terminal.strategy.engine import StrategyEngine
@@ -90,7 +96,13 @@ class Terminal:
         self.recovery: Dict[str, int] = {}
         self._eod_done_day = ""
         self.risk = RiskManager(self)
+        self.entry_model = EntryQualityModel(self.db)
+        self.evaluator = CouncilEvaluator(self)
         self.council = Council(self)
+        self.copilot = Copilot(self)
+        self.journal = Journal(self)
+        self.metrics = Metrics(self)
+        self.telegram = TelegramCommands(self)
         self.health = HealthMonitor(self)
         self._tasks: List[asyncio.Task] = []
         self._stop = asyncio.Event()
@@ -143,6 +155,9 @@ class Terminal:
             self._tasks.append(asyncio.create_task(self._stream_loop(), name="option-stream"))
         if getattr(self.broker, "live", False):
             self._tasks.append(asyncio.create_task(self._reconcile_loop(), name="reconcile-loop"))
+        self._tasks.append(asyncio.create_task(self._learning_loop(), name="learning-loop"))
+        if self.telegram.enabled:
+            self._tasks.append(asyncio.create_task(self.telegram.run(), name="telegram-commands"))
         if self.recovery.get("runs_exiting"):
             asyncio.create_task(self.strategies.resume_exits())
         self.engine_running = True
@@ -220,6 +235,18 @@ class Terminal:
             except Exception:
                 log.exception("stream loop error")
             await asyncio.sleep(15.0)
+
+    async def _learning_loop(self) -> None:
+        """Score council decisions after their horizon and train the entry-quality model."""
+        while not self._stop.is_set():
+            await asyncio.sleep(30.0)
+            try:
+                scored = self.evaluator.score_pending()
+                trained = self.entry_model.train_pending()
+                if scored or trained:
+                    log.info("[learning] scored %d decisions, trained on %d", scored, trained)
+            except Exception:
+                log.exception("learning loop error")
 
     async def _reconcile_loop(self) -> None:
         await asyncio.sleep(3.0)
@@ -373,6 +400,11 @@ class Terminal:
             self.log("WARNING", "terminal", "operating window ended: squaring off all open positions")
             await self.alerts.emit("WARNING", "schedule", "End of operating window", "Squaring off all open positions.", dedupe_seconds=0)
             await self.orders.flatten_all(OrderSource.SENTINEL, "scheduler", "END_OF_DAY_SQUARE_OFF")
+        try:
+            entry = self.journal.write_today()
+            self.log("INFO", "journal", f"daily journal written: P&L ₹{entry['pnl']:,.0f}, {entry['trades']} trades")
+        except Exception:
+            log.exception("journal write failed")
 
     async def _council_loop(self) -> None:
         await asyncio.sleep(3.0)
@@ -434,6 +466,9 @@ class Terminal:
                         "enabled": self.risk.market_enabled.get(u.exchange.value, True)})
         return out
 
+    def pnl_summary(self) -> dict:
+        return {"daily": self.positions.daily_pnl(), "realized": round(self.positions.realized_today, 2), "unrealized": self.positions.unrealized(), "charges": round(self.positions.charges_today, 2)}
+
     def snapshot(self) -> dict:
         vix = self.processor.last_tick(VIX_SYMBOL)
         return {
@@ -446,7 +481,8 @@ class Terminal:
             "last": [d.model_dump(mode="json") | {"assessments": [{k: v for k, v in a.model_dump(mode="json").items() if k != "data"} for a in d.assessments]} for d in self.council.decisions[-4:][::-1]],
             "agents": [a.status() for a in self.council.agents], "briefs": self.council.last_brief, "llm": self.council.llm.status()},
             "alerts": [a.model_dump(mode="json") for a in self.alerts.recent[-15:][::-1]], "scheduler": self.scheduler.describe(), "exits": self.exit_guard.describe(),
-            "reconcile": {"orders": self.order_reconciler.describe(), "positions": self.position_reconciler.describe(), "stream": self.stream_stats, "recovery": self.recovery}, "pnl": {"daily": self.positions.daily_pnl(), "realized": round(self.positions.realized_today, 2), "unrealized": self.positions.unrealized(), "charges": round(self.positions.charges_today, 2)},
+            "reconcile": {"orders": self.order_reconciler.describe(), "positions": self.position_reconciler.describe(), "stream": self.stream_stats, "recovery": self.recovery},
+            "copilot": self.copilot.status(), "model": self.entry_model.describe(), "telegram": self.telegram.status(), "pnl": self.pnl_summary(),
         }
 
 

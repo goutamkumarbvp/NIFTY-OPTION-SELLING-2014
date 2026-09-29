@@ -148,7 +148,7 @@ class MarketDataProcessor:
         self.last_chain_ts[chain.underlying] = chain.ts
         hist = self.pcr_history[chain.underlying]
         if not hist or chain.ts - hist[-1]["ts"] >= 10:
-            hist.append({"ts": chain.ts, "pcr": chain.pcr, "pcr_volume": chain.pcr_volume, "spot": chain.spot, "iv": chain.iv_atm, "max_pain": chain.max_pain})
+            hist.append({"ts": chain.ts, "pcr": chain.pcr, "pcr_volume": chain.pcr_volume, "spot": chain.spot, "iv": chain.iv_atm, "max_pain": chain.max_pain, "total_oi": chain.total_ce_oi + chain.total_pe_oi})
 
     def vix_rank(self) -> dict:
         h = list(self.vix_history)

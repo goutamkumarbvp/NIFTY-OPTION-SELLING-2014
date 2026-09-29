@@ -29,6 +29,29 @@ Point `DATA_SOURCE=kotak` / `BROKER=kotak|zerodha` at real accounts when ready.
 | **Markets** | NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY (NSE) · SENSEX, BANKEX (BSE) · CRUDEOIL, NATURALGAS, GOLD, SILVER (MCX) with correct expiry weekdays and sessions. |
 | **Ops** | SQLite persistence, tamper-evident audit trail, alerts to dashboard / Telegram / e-mail, health monitor, feed supervisor with auto-reconnect, role-based auth. |
 
+## What the AI layer does (V30.1)
+
+- **Copilot** (Copilot panel, `/api/copilot/chat`): a Claude tool-use agent over the terminal's own state (overview, chain, indicators, risk, positions, council, journal, backtests). Its only write tool *proposes* a plan into Approvals; it cannot place orders, change mode or edit limits. Without an LLM key it answers deterministically from the same tools. Enable with `LLM_ENABLED=true`, `LLM_PROVIDER=anthropic`, `LLM_MODEL=claude-opus-5-5`, `LLM_API_KEY=...`.
+- **Council evaluation** (Journal & Learning panel): every decision is journaled with the features it saw and scored after `DECISION_SCORE_MINUTES` (30) against the underlying's forward move relative to its expected move. The scorecard shows each agent's hit-rate, so weight changes are measured, not guessed.
+- **Learned entry-quality model**: an online logistic regression trained on scored decisions; the `LearnedModel` agent votes with P(next window is seller-friendly), with confidence that grows with samples. Weights are visible on the dashboard.
+- **Adaptive strategy selection**: the StrategySelector Thompson-samples each structure's win-rate posterior per regime (from the PostTradeReviewer's statistics), favouring proven structures while still exploring.
+- **Daily journal**: written at the end of the operating window (P&L, runs, council mix, alerts, lessons, narrator brief) with "similar past days" retrieval.
+- **Sentinel order-flow anomalies**: OI unwinds, PCR flips, bid-ask blowouts at ATM (veto) and cross-market divergence, in addition to sigma moves and VIX spikes.
+
+## Live-readiness (Phase A)
+
+- **Order reconciliation**: every working live order is polled and fills (full or partial), cancellations and rejections are applied to the book, so the exit guard always sees the truth before retrying.
+- **Position & margin reconciliation**: the broker's book and margin are compared every `RECONCILE_SECONDS`; mismatches alert (adopt from the System panel / `POST /api/broker/reconcile?adopt=true`); the broker's used margin replaces the SPAN estimate while fresh.
+- **Restart recovery**: positions, today's working orders and active/exiting runs are restored on start; exiting runs resume through the exit guard.
+- **Option-quote streaming**: held and near-ATM contracts are subscribed on the broker WebSocket (Kotak SFeed, KiteTicker, SmartWebSocketV2) so stop-losses act on ticks, not polls.
+- **Preflight**: the startup banner prints exactly which interlocks and providers are active and refuses inconsistent configs. Profiles: `.env.paper`, `.env.live`.
+
+## Operations (Phase D)
+
+- **Telegram commands** (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`): `/status /pnl /positions /runs /pause /resume /kill confirm /gate open|close /mode manual|auto /ask <question>`; only the configured chat id is honoured.
+- **Metrics**: Prometheus text at `/metrics`. **Logs**: `LOG_FORMAT=json` for structured lines. **Deploy**: `deploy/terminal.service` (systemd), `docker compose up --build`. **CI**: GitHub Actions runs ruff + pytest on every push.
+- **Release**: `python scripts/build_release.py` builds the distributable zip.
+
 ## The two modes
 
 | | MANUAL | AUTO |
@@ -165,7 +188,7 @@ TOTP automatically.
 scripts/start_terminal.sh          # Linux / macOS (creates .venv, installs, starts)
 scripts\start_terminal.bat         # Windows
 docker compose up --build          # container on :8600 with a persistent /data volume
-python -m pytest -q                # test-suite (30 tests)
+python -m pytest -q                # test-suite
 ```
 
 Interactive API docs: `http://127.0.0.1:8600/api/docs`.
