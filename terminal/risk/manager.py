@@ -141,6 +141,11 @@ class RiskManager:
             reasons.append(f"HALTED:{self.halted_reason}")
         if not self.market_enabled.get(plan.exchange.value, True):
             reasons.append(f"MARKET_DISABLED:{plan.exchange.value}")
+        ok, why = self.t.scheduler.can_enter(self.t.universe.get(plan.underlying))
+        if not ok:
+            reasons.append(why)  # e.g. OUTSIDE_OPERATING_HOURS / SESSION_CLOSED, before any leg is sent
+        if not self.t.feed.is_fresh(self.t.settings.feed_stale_seconds):
+            reasons.append("FEED_STALE")
         total_lots = sum(l.lots for l in plan.legs)
         if self.t.positions.open_lots() + total_lots > self.limits["max_open_lots"]:
             reasons.append("MAX_OPEN_LOTS")

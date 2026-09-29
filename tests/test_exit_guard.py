@@ -116,6 +116,11 @@ async def test_outside_operating_window_blocks_entries_and_squares_off(terminal)
     q = t.chains["NIFTY"].rows[10].ce
     entry = await t.orders.submit(t.orders.build(q.symbol, Side.SELL, 1, OrderSource.MANUAL), "trader")
     assert entry.status == OrderStatus.RISK_REJECTED and "OUTSIDE_OPERATING_HOURS" in entry.message
+    # a multi-leg plan is refused before any leg (no wing bought and rolled back)
+    plan = t.strategies.make_plan("iron_condor", "NIFTY", 1, source=OrderSource.MANUAL)
+    with pytest.raises(ValueError, match="OUTSIDE_OPERATING_HOURS"):
+        await t.strategies.deploy(plan, "trader", OrderSource.MANUAL)
+    assert not [o for o in t.orders.orders.values() if o.status == OrderStatus.FILLED]
     # a position that somehow exists past the end time is squared off by the session check
     t.scheduler.overrides["terminal_end_time"] = "23:59"
     filled = await t.orders.submit(t.orders.build(q.symbol, Side.SELL, 1, OrderSource.MANUAL), "trader")
