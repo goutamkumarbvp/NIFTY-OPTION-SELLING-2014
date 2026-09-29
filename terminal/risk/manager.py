@@ -73,7 +73,8 @@ class RiskManager:
                 continue
             spot = self.t.processor.last_price(p.underlying) or 0.0
             if p.net_qty < 0:
-                total += spot * abs(p.net_qty) * 0.07
+                hedged = any(o.net_qty > 0 and o.underlying == p.underlying and o.option_type == p.option_type and o.expiry == p.expiry for o in self.t.positions.open_positions())
+                total += spot * abs(p.net_qty) * 0.07 * (0.4 if hedged else 1.0)
             else:
                 total += p.avg_price * p.net_qty
         return round(total, 0)
@@ -111,6 +112,10 @@ class RiskManager:
             spot = self.t.processor.last_price(order.underlying) or 0.0
             if order.side == Side.SELL:
                 add_margin = spot * order.quantity * 0.07
+                # a long option of the same type / expiry already held makes this a spread (SPAN offset)
+                hedged = any(p.net_qty > 0 and p.underlying == order.underlying and p.option_type == order.option_type and p.expiry == order.expiry for p in self.t.positions.open_positions())
+                if hedged:
+                    add_margin *= 0.4
                 cap = self._capital()
                 if cap > 0 and (self.margin_used() + add_margin) / cap * 100 > self.limits["max_margin_utilisation_pct"]:
                     reasons.append("MARGIN_UTILISATION")
@@ -139,6 +144,14 @@ class RiskManager:
         total_lots = sum(l.lots for l in plan.legs)
         if self.t.positions.open_lots() + total_lots > self.limits["max_open_lots"]:
             reasons.append("MAX_OPEN_LOTS")
+        # positions are netted per symbol: a new structure must not touch a strike another run holds
+        held = {p.symbol for p in self.t.positions.open_positions()}
+        new_symbols = {l.symbol for l in plan.legs} - held
+        if len(held) + len(new_symbols) > self.limits["max_open_positions"]:
+            reasons.append("MAX_OPEN_POSITIONS")
+        clash = [l.symbol for l in plan.legs if l.symbol in held]
+        if clash:
+            reasons.append("SYMBOL_ALREADY_IN_POSITION:" + ",".join(clash))
         if plan.lots > self.limits["max_lots_per_order"]:
             reasons.append("MAX_LOTS_PER_ORDER")
         cap = self._capital()

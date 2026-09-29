@@ -33,8 +33,16 @@ SPECS: Dict[str, StrategySpec] = {
 
 
 def _strike_offset(chain: OptionChain, strike: float, steps: int) -> float:
+    """Strike `steps` away; clamped to the chain's edge so a wing always exists."""
     step = chain.rows[1].strike - chain.rows[0].strike if len(chain.rows) > 1 else 50
-    return strike + steps * step
+    target = strike + steps * step
+    strikes = [r.strike for r in chain.rows]
+    if target in strikes:
+        return target
+    candidates = [k for k in strikes if (k > strike if steps > 0 else k < strike)]
+    if not candidates:
+        raise ValueError(f"NO_WING_AVAILABLE_BEYOND:{strike}")
+    return max(candidates) if steps > 0 else min(candidates)
 
 
 def build_legs(key: str, chain: OptionChain, lots: int, params: Optional[Dict[str, float]] = None) -> List[Leg]:

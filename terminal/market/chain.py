@@ -19,7 +19,7 @@ from terminal.market.pricing import bs_greeks, bs_price, implied_vol, round_to_t
 
 
 class OptionChainBuilder:
-    def __init__(self, seed: int = 7, strikes_each_side: int = 15) -> None:
+    def __init__(self, seed: int = 7, strikes_each_side: int = 25) -> None:
         self.rng = random.Random(seed)
         self.strikes_each_side = strikes_each_side
         self._oi: Dict[Tuple[str, str, float, str], int] = {}
@@ -99,7 +99,11 @@ class OptionChainBuilder:
         rows: List[ChainRow] = []
         tot_ce_oi = tot_pe_oi = 0
         tot_ce_vol = tot_pe_vol = 0
-        strikes = {atm + i * step for i in range(-self.strikes_each_side, self.strikes_each_side + 1)}
+        # window scales with the expected move so 10-20 delta strikes (and their wings)
+        # are always inside the chain, even for monthly expiries on high-priced indices
+        sigma_pts = spot * base_iv * math.sqrt(max(t, 1e-6))
+        half = int(min(60, max(self.strikes_each_side, math.ceil(3.5 * sigma_pts / step) + 5)))
+        strikes = {atm + i * step for i in range(-half, half + 1)}
         strikes |= {float(x) for x in (extra_strikes or set())}
         for strike in sorted(strikes):
             if strike <= 0:
@@ -128,7 +132,7 @@ class OptionChainBuilder:
                     oi = self._model_oi(key, i, not is_call, spot_move)
                     oi_change = oi - self._oi_day_open.get(key, oi)
                     vol = int(oi * self.rng.uniform(0.15, 0.6) * math.exp(-0.08 * abs(i)))
-                    if abs(i) > self.strikes_each_side:
+                    if abs(i) > half:
                         oi = int(oi * 0.2)
                         vol = int(vol * 0.2)
                 ltp = max(0.05, round_to_tick(ltp, u.tick_size))
@@ -157,9 +161,12 @@ class OptionChainBuilder:
                            total_pe_oi=tot_pe_oi, iv_atm=iv_atm, expected_move=expected_move)
 
     @staticmethod
-    def _max_pain(rows: List[ChainRow]) -> float:
-        best, best_pain = rows[0].strike, float("inf")
-        for cand in rows:
+    def _max_pain(rows: List[ChainRow], window: int = 30) -> float:
+        # evaluate candidates near the OI mass (centre of the chain) to keep this O(n·window)
+        mid = len(rows) // 2
+        cands = rows[max(0, mid - window): mid + window + 1]
+        best, best_pain = cands[0].strike, float("inf")
+        for cand in cands:
             pain = 0.0
             for r in rows:
                 pain += max(cand.strike - r.strike, 0) * r.ce.oi + max(r.strike - cand.strike, 0) * r.pe.oi

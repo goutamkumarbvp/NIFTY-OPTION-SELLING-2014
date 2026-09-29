@@ -15,6 +15,7 @@ from terminal.core.models import OptionChain, OptionQuote, OrderSource, Terminal
 from terminal.execution.brokers.base import Broker
 from terminal.execution.brokers.live import AngelOneBroker, KotakNeoBroker, ZerodhaBroker
 from terminal.execution.brokers.paper import PaperBroker
+from terminal.execution.exit_guard import ExitGuard
 from terminal.execution.orders import OrderManager
 from terminal.execution.positions import PositionManager
 from terminal.market.chain import OptionChainBuilder
@@ -80,7 +81,9 @@ class Terminal:
         self.alerts = AlertEngine(self)
         self.positions = PositionManager(self)
         self.orders = OrderManager(self)
+        self.exit_guard = ExitGuard(self)
         self.strategies = StrategyEngine(self)
+        self._eod_done_day = ""
         self.risk = RiskManager(self)
         self.council = Council(self)
         self.health = HealthMonitor(self)
@@ -266,16 +269,31 @@ class Terminal:
         while not self._stop.is_set():
             try:
                 await self.risk.evaluate()
+                await self.exit_guard.tick()
+                await self._end_of_day_check()
                 self.health.sample()
             except Exception:
                 log.exception("risk loop error")
             await asyncio.sleep(1.0)
 
+    async def _end_of_day_check(self) -> None:
+        """At TERMINAL_END_TIME square off anything still open (once per day)."""
+        if not self.scheduler.past_end_time():
+            return
+        day = time.strftime("%Y-%m-%d")
+        if self._eod_done_day == day:
+            return
+        self._eod_done_day = day
+        if self.positions.open_positions():
+            self.log("WARNING", "terminal", "operating window ended: squaring off all open positions")
+            await self.alerts.emit("WARNING", "schedule", "End of operating window", "Squaring off all open positions.", dedupe_seconds=0)
+            await self.orders.flatten_all(OrderSource.SENTINEL, "scheduler", "END_OF_DAY_SQUARE_OFF")
+
     async def _council_loop(self) -> None:
         await asyncio.sleep(3.0)
         while not self._stop.is_set():
             try:
-                if not self.paused and self.chains:
+                if not self.paused and self.chains and self.scheduler.in_operating_window():
                     await self.council.run_cycle()
             except Exception:
                 log.exception("council loop error")
@@ -342,7 +360,7 @@ class Terminal:
             "pending_plans": [p.model_dump(mode="json") for p in self.council.pending_plans()], "council": {"cycle": self.council.cycle, "busy": self.council.busy, "focus": self.council.focus, "auto_trades_today": self.council.auto_trades_today,
             "last": [d.model_dump(mode="json") | {"assessments": [{k: v for k, v in a.model_dump(mode="json").items() if k != "data"} for a in d.assessments]} for d in self.council.decisions[-4:][::-1]],
             "agents": [a.status() for a in self.council.agents], "briefs": self.council.last_brief, "llm": self.council.llm.status()},
-            "alerts": [a.model_dump(mode="json") for a in self.alerts.recent[-15:][::-1]], "scheduler": self.scheduler.describe(), "pnl": {"daily": self.positions.daily_pnl(), "realized": round(self.positions.realized_today, 2), "unrealized": self.positions.unrealized(), "charges": round(self.positions.charges_today, 2)},
+            "alerts": [a.model_dump(mode="json") for a in self.alerts.recent[-15:][::-1]], "scheduler": self.scheduler.describe(), "exits": self.exit_guard.describe(), "pnl": {"daily": self.positions.daily_pnl(), "realized": round(self.positions.realized_today, 2), "unrealized": self.positions.unrealized(), "charges": round(self.positions.charges_today, 2)},
         }
 
 
