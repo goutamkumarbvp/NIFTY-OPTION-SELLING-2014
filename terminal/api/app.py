@@ -492,22 +492,24 @@ def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
     @app.get("/api/broker/live/status")
     @app.get("/api/broker/kotak/status", include_in_schema=False)
     @app.get("/api/broker/zerodha/status", include_in_schema=False)
+    @app.get("/api/broker/angel/status", include_in_schema=False)
     async def live_status(user: dict = Depends(require("viewer"))):
         t = T()
         if t.live is None:
-            return ok({"configured": False, "provider": None, "hint": "Set DATA_SOURCE=kotak or DATA_SOURCE=zerodha plus credentials in .env"})
+            return ok({"configured": False, "provider": None, "hint": "Set DATA_SOURCE=kotak | zerodha | angel plus credentials in .env"})
         return ok({"configured": True, **t.live.status(), "chain": t.live_chain_stats, "feed": t.feed.status()})
 
     @app.post("/api/broker/live/connect")
     @app.post("/api/broker/kotak/connect", include_in_schema=False)
     @app.post("/api/broker/zerodha/connect", include_in_schema=False)
+    @app.post("/api/broker/angel/connect", include_in_schema=False)
     async def live_connect(user: dict = Depends(require("admin"))):
         t = T()
         live = _live(t)
         live.authenticated = False
         result = await live.connect()
         found = await live.resolve_index_tokens(t.universe.all(), include_vix=True)
-        if t.feed.name in ("kotak_neo", "zerodha_kite"):
+        if t.feed.name in ("kotak_neo", "zerodha_kite", "angel_smartapi"):
             await t.feed.reconnect()
         t.audit.record("LIVE_SESSION_RECONNECT", {"provider": live.provider, "tokens": list(found)}, user["username"])
         return ok({"provider": live.provider, "login": result, "tokens": found})

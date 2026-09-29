@@ -25,7 +25,7 @@ Point `DATA_SOURCE=kotak` / `BROKER=kotak|zerodha` at real accounts when ready.
 | **Agent council** (9 agents) | MarketAnalyst · VolatilityAgent · OptionsFlow · EventRisk · Sentinel · RiskGuardian · StrategySelector · ExecutionTactician · PostTradeReviewer, plus an optional LLM **narrator** (Claude) that explains decisions and never trades. |
 | **Strategies** | Short straddle, delta strangle, iron condor, iron fly, bull-put / bear-call credit spreads, jade lizard. Entry, stop-loss, target, trailing lock, square-off, delta-based adjustments. |
 | **Risk manager** | Pre-trade gates on every order (gate, kill switch, session, lots, positions, per-market lots, margin, daily loss, feed freshness, LIVE interlock) and a 1-second portfolio monitor that **halts and flattens** on breach. |
-| **Execution** | Paper broker with bid/ask crossing, slippage and full Indian option charges; Kotak Neo and Zerodha Kite live data + order adapters (fail closed without credentials). |
+| **Execution** | Paper broker with bid/ask crossing, slippage and full Indian option charges; Kotak Neo, Zerodha Kite and Angel One SmartAPI live data + order adapters (fail closed without credentials). |
 | **Markets** | NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY (NSE) · SENSEX, BANKEX (BSE) · CRUDEOIL, NATURALGAS, GOLD, SILVER (MCX) with correct expiry weekdays and sessions. |
 | **Ops** | SQLite persistence, tamper-evident audit trail, alerts to dashboard / Telegram / e-mail, health monitor, feed supervisor with auto-reconnect, role-based auth. |
 
@@ -135,6 +135,29 @@ chain, resolved from the daily instrument dump. Live orders use
 `BROKER=zerodha` behind the same triple interlock. `DATA_SOURCE` and `BROKER`
 must name the same provider; one live session is shared by feed, quotes and
 orders.
+
+## Connecting your Angel One account (third broker option)
+
+1. `python -m pip install -r requirements-angel.txt`
+2. Create an app at smartapi.angelbroking.com (Trading API) and enable TOTP
+   in the Angel One app. Put these in `.env`:
+   ```text
+   DATA_SOURCE=angel
+   ANGEL_API_KEY=...
+   ANGEL_CLIENT_CODE=...
+   ANGEL_PIN=...          # trading PIN
+   ANGEL_TOTP_SECRET=...
+   ```
+3. `python scripts/angel_check.py` logs in (client code + PIN + TOTP), loads
+   the public instrument master, resolves indices / MCX futures, fetches
+   sample option quotes and streams ticks for 15 s. Then `python -m terminal`.
+
+What flows from Angel One: index / futures ticks over SmartWebSocketV2
+(SNAP_QUOTE mode) and option quotes (LTP, OI, volume, bid/ask) via
+`getMarketData` in batches of 50 tokens for the strikes in the active chain.
+Live orders use `BROKER=angel` (product CARRYFORWARD) behind the same triple
+interlock. No daily browser login is needed; the session re-authenticates with
+TOTP automatically.
 
 ## Running
 

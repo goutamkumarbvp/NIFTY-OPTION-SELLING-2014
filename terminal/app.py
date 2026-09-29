@@ -13,12 +13,13 @@ from terminal.core.audit import AuditLog
 from terminal.core.bus import EventBus
 from terminal.core.models import OptionChain, OptionQuote, OrderSource, TerminalMode, Tick, TradingEnv
 from terminal.execution.brokers.base import Broker
-from terminal.execution.brokers.live import KotakNeoBroker, ZerodhaBroker
+from terminal.execution.brokers.live import AngelOneBroker, KotakNeoBroker, ZerodhaBroker
 from terminal.execution.brokers.paper import PaperBroker
 from terminal.execution.orders import OrderManager
 from terminal.execution.positions import PositionManager
 from terminal.market.chain import OptionChainBuilder
-from terminal.market.feed import KotakNeoFeed, MarketFeed, SimulatedFeed, ZerodhaFeed
+from terminal.market.angel import AngelOneSession
+from terminal.market.feed import AngelOneFeed, KotakNeoFeed, MarketFeed, SimulatedFeed, ZerodhaFeed
 from terminal.market.kotak import KotakNeoSession
 from terminal.market.zerodha import ZerodhaSession
 from terminal.market.processor import MarketDataProcessor
@@ -67,6 +68,8 @@ class Terminal:
             self.live = KotakNeoSession(s, s.runtime_dir)
         elif "zerodha" in providers:
             self.live = ZerodhaSession(s, s.runtime_dir)
+        elif "angel" in providers:
+            self.live = AngelOneSession(s, s.runtime_dir)
         elif providers:
             raise RuntimeError(f"UNKNOWN_LIVE_PROVIDER: {sorted(providers)}")
         self.live_chain_stats = {"polls": 0, "quotes": 0, "errors": 0, "last_ts": 0.0, "last_error": ""}
@@ -94,6 +97,8 @@ class Terminal:
             return KotakNeoFeed(self.universe.all(), self.live)
         if s.data_source.lower() == "zerodha":
             return ZerodhaFeed(self.universe.all(), self.live)
+        if s.data_source.lower() == "angel":
+            return AngelOneFeed(self.universe.all(), self.live)
         return SimulatedFeed(self.universe.all(), interval=s.tick_interval_seconds, speed=s.sim_speed, always_open=s.sim_always_open, seed=seed)
 
     def _make_broker(self) -> Broker:
@@ -103,6 +108,8 @@ class Terminal:
                 return KotakNeoBroker(s, self.live, self.universe)
             if s.broker.lower() == "zerodha":
                 return ZerodhaBroker(s, self.live, self.universe)
+            if s.broker.lower() == "angel":
+                return AngelOneBroker(s, self.live, self.universe)
             raise RuntimeError(f"UNSUPPORTED_LIVE_BROKER:{s.broker}")
         return PaperBroker(capital=s.capital)
 
