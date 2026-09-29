@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     manual_confirmation_for_agent_orders: bool = Field(True, alias="MANUAL_CONFIRMATION_FOR_AGENT_ORDERS")
 
     # --- market data -------------------------------------------------------
-    data_source: str = Field("simulated", alias="DATA_SOURCE")  # simulated | kotak
+    data_source: str = Field("simulated", alias="DATA_SOURCE")  # simulated | kotak | zerodha
     markets: str = Field("NSE,BSE,MCX", alias="MARKETS")
     sim_speed: float = Field(1.0, alias="SIM_SPEED")  # simulation time multiplier
     sim_always_open: bool = Field(True, alias="SIM_ALWAYS_OPEN")  # keep simulated market open 24x7
@@ -54,10 +54,12 @@ class Settings(BaseSettings):
     neo_mpin: str = Field("", alias="NEO_MPIN")
     neo_totp_secret: str = Field("", alias="NEO_TOTP_SECRET")
     neo_environment: str = Field("prod", alias="NEO_ENVIRONMENT")
-    kotak_chain_poll_seconds: float = Field(4.0, alias="KOTAK_CHAIN_POLL_SECONDS")
-    kotak_chain_underlyings: str = Field("", alias="KOTAK_CHAIN_UNDERLYINGS")  # blank = council focus list
     zerodha_api_key: str = Field("", alias="ZERODHA_API_KEY")
+    zerodha_api_secret: str = Field("", alias="ZERODHA_API_SECRET")
     zerodha_access_token: str = Field("", alias="ZERODHA_ACCESS_TOKEN")
+    zerodha_request_token: str = Field("", alias="ZERODHA_REQUEST_TOKEN")
+    live_chain_poll_seconds: float = Field(4.0, alias="LIVE_CHAIN_POLL_SECONDS")
+    live_chain_underlyings: str = Field("", alias="LIVE_CHAIN_UNDERLYINGS")  # blank = council focus list
 
     # --- capital & risk ----------------------------------------------------
     capital: float = Field(1_000_000.0, alias="CAPITAL")

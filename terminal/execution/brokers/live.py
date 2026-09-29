@@ -74,41 +74,54 @@ class ZerodhaBroker(Broker):
     name = "zerodha"
     live = True
 
-    def __init__(self, settings) -> None:
+    def __init__(self, settings, session, universe) -> None:
         super().__init__()
         self.s = settings
-        self._kite = None
+        self.session = session
+        self.universe = universe
 
     async def connect(self) -> None:
-        if not (self.s.zerodha_api_key and self.s.zerodha_access_token):
-            raise RuntimeError("ZERODHA_CREDENTIALS_MISSING")
-        try:
-            from kiteconnect import KiteConnect  # type: ignore
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError("KITE_SDK_NOT_INSTALLED: pip install kiteconnect") from exc
-        self._kite = KiteConnect(api_key=self.s.zerodha_api_key)
-        self._kite.set_access_token(self.s.zerodha_access_token)
+        await self.session.connect()
         self.connected = True
 
     async def place(self, order: Order, quote_lookup: QuoteLookup) -> Order:
-        if not self.connected or self._kite is None:
+        if not self.session.authenticated:
             raise RuntimeError("BROKER_NOT_CONNECTED")
-        loop = asyncio.get_running_loop()
-        k = self._kite
-        exch = {"NSE": "NFO", "BSE": "BFO", "MCX": "MCX"}[order.exchange.value]
-        oid = await loop.run_in_executor(None, lambda: k.place_order(variety=k.VARIETY_REGULAR, exchange=exch, tradingsymbol=order.symbol,
-                                                                     transaction_type=k.TRANSACTION_TYPE_BUY if order.side == Side.BUY else k.TRANSACTION_TYPE_SELL,
-                                                                     quantity=order.quantity, product=k.PRODUCT_NRML,
-                                                                     order_type=k.ORDER_TYPE_LIMIT if order.order_type == OrderType.LIMIT else k.ORDER_TYPE_MARKET,
-                                                                     price=order.limit_price, tag="AITERM"))
-        order.broker_order_id = str(oid)
-        order.status = OrderStatus.OPEN
+        u = self.universe.get(order.underlying)
+        scrip = await self.session.resolve_option(u, order.expiry, order.strike, order.option_type)
+        if not scrip:
+            order.status = OrderStatus.REJECTED
+            order.message = "ZERODHA_TRADING_SYMBOL_NOT_FOUND"
+            return order
+        k = self.session.kite
+        oid = await self.session._call("place_order", variety=k.VARIETY_REGULAR, exchange=scrip["exchange"], tradingsymbol=scrip["trading_symbol"],
+                                       transaction_type=k.TRANSACTION_TYPE_BUY if order.side == Side.BUY else k.TRANSACTION_TYPE_SELL, quantity=order.quantity,
+                                       product=k.PRODUCT_NRML, order_type=k.ORDER_TYPE_LIMIT if order.order_type == OrderType.LIMIT else k.ORDER_TYPE_MARKET,
+                                       price=order.limit_price if order.order_type == OrderType.LIMIT else None, validity=k.VALIDITY_DAY, tag="AITERM")
+        order.broker_order_id = str(oid or "")
+        order.status = OrderStatus.OPEN if order.broker_order_id else OrderStatus.REJECTED
+        order.message = f"KITE_ORDER:{order.broker_order_id}"
         order.updated_at = time.time()
         return order
 
     async def cancel(self, order: Order) -> Order:
-        if self._kite is not None and order.broker_order_id:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: self._kite.cancel_order(variety=self._kite.VARIETY_REGULAR, order_id=order.broker_order_id))
+        if order.broker_order_id:
+            await self.session._call("cancel_order", variety=self.session.kite.VARIETY_REGULAR, order_id=order.broker_order_id)
             order.status = OrderStatus.CANCELLED
+            order.updated_at = time.time()
         return order
+
+    async def margins(self) -> Dict[str, float]:
+        try:
+            m = await self.session.margins()
+            eq = (m or {}).get("equity", {}) or {}
+            com = (m or {}).get("commodity", {}) or {}
+            return {"available": float(eq.get("net") or 0) + float(com.get("net") or 0), "raw": m}
+        except Exception as exc:
+            self.last_error = str(exc)
+            return {}
+
+    def status(self) -> dict:
+        base = super().status()
+        base["session"] = self.session.status()
+        return base

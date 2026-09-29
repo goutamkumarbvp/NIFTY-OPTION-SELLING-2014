@@ -18,8 +18,9 @@ from terminal.execution.brokers.paper import PaperBroker
 from terminal.execution.orders import OrderManager
 from terminal.execution.positions import PositionManager
 from terminal.market.chain import OptionChainBuilder
-from terminal.market.feed import KotakNeoFeed, MarketFeed, SimulatedFeed
+from terminal.market.feed import KotakNeoFeed, MarketFeed, SimulatedFeed, ZerodhaFeed
 from terminal.market.kotak import KotakNeoSession
+from terminal.market.zerodha import ZerodhaSession
 from terminal.market.processor import MarketDataProcessor
 from terminal.market.universe import VIX_SYMBOL, Universe
 from terminal.monitoring.health import HealthMonitor
@@ -55,11 +56,20 @@ class Terminal:
         self.loop_lag_ms = 0.0
         self.ws_clients: Set = set()
         self.started_at = time.time()
-        # feeds & broker (one Kotak session shared by feed, chain poller and broker)
-        self.kotak: Optional[KotakNeoSession] = None
-        if s.data_source.lower() == "kotak" or (self.env == TradingEnv.LIVE and s.broker.lower() == "kotak"):
-            self.kotak = KotakNeoSession(s, s.runtime_dir)
-        self.kotak_chain_stats = {"polls": 0, "quotes": 0, "errors": 0, "last_ts": 0.0, "last_error": ""}
+        # feeds & broker: one live broker session (Kotak Neo or Zerodha Kite) shared by feed, chain poller and broker
+        self.live = None  # KotakNeoSession | ZerodhaSession | None
+        providers = {s.data_source.lower()} | ({s.broker.lower()} if self.env == TradingEnv.LIVE else set())
+        providers.discard("simulated")
+        providers.discard("paper")
+        if len(providers) > 1:
+            raise RuntimeError(f"ONE_LIVE_PROVIDER_ONLY: DATA_SOURCE and BROKER must agree ({sorted(providers)})")
+        if "kotak" in providers:
+            self.live = KotakNeoSession(s, s.runtime_dir)
+        elif "zerodha" in providers:
+            self.live = ZerodhaSession(s, s.runtime_dir)
+        elif providers:
+            raise RuntimeError(f"UNKNOWN_LIVE_PROVIDER: {sorted(providers)}")
+        self.live_chain_stats = {"polls": 0, "quotes": 0, "errors": 0, "last_ts": 0.0, "last_error": ""}
         self.feed: MarketFeed = self._make_feed(seed)
         self.broker: Broker = self._make_broker()
         # services
@@ -81,16 +91,18 @@ class Terminal:
     def _make_feed(self, seed: Optional[int]) -> MarketFeed:
         s = self.settings
         if s.data_source.lower() == "kotak":
-            return KotakNeoFeed(self.universe.all(), self.kotak)
+            return KotakNeoFeed(self.universe.all(), self.live)
+        if s.data_source.lower() == "zerodha":
+            return ZerodhaFeed(self.universe.all(), self.live)
         return SimulatedFeed(self.universe.all(), interval=s.tick_interval_seconds, speed=s.sim_speed, always_open=s.sim_always_open, seed=seed)
 
     def _make_broker(self) -> Broker:
         s = self.settings
         if self.env == TradingEnv.LIVE and s.live_allowed:
             if s.broker.lower() == "kotak":
-                return KotakNeoBroker(s, self.kotak, self.universe)
+                return KotakNeoBroker(s, self.live, self.universe)
             if s.broker.lower() == "zerodha":
-                return ZerodhaBroker(s)
+                return ZerodhaBroker(s, self.live, self.universe)
             raise RuntimeError(f"UNSUPPORTED_LIVE_BROKER:{s.broker}")
         return PaperBroker(capital=s.capital)
 
@@ -109,8 +121,8 @@ class Terminal:
         self._tasks = [asyncio.create_task(self._chain_loop(), name="chain-loop"), asyncio.create_task(self._risk_loop(), name="risk-loop"),
                        asyncio.create_task(self._council_loop(), name="council-loop"), asyncio.create_task(self._broadcast_loop(), name="broadcast-loop"),
                        asyncio.create_task(self._feed_supervisor(), name="feed-supervisor")]
-        if self.kotak is not None:
-            self._tasks.append(asyncio.create_task(self._kotak_chain_loop(), name="kotak-chain-poller"))
+        if self.live is not None:
+            self._tasks.append(asyncio.create_task(self._live_chain_loop(), name="live-chain-poller"))
         self.engine_running = True
         self.log("INFO", "terminal", f"{PRODUCT} v{__version__} started: mode={self.mode.value} env={self.env.value} feed={self.feed.name} broker={self.broker.name}")
 
@@ -214,34 +226,34 @@ class Terminal:
             self.loop_lag_ms = round((time.perf_counter() - t0) * 1000, 1)
             await asyncio.sleep(self._chain_refresh_seconds)
 
-    async def _kotak_chain_loop(self) -> None:
-        """Poll real option quotes from Kotak and overlay them on the model chain."""
+    async def _live_chain_loop(self) -> None:
+        """Poll real option quotes from the live broker and overlay them on the model chain."""
         await asyncio.sleep(5.0)
         while not self._stop.is_set():
-            if self.kotak.missing_credentials() or not self.kotak.authenticated:
-                # nothing to poll until the session is up; the feed / operator re-login handles that
+            if self.live.missing_credentials() or not self.live.authenticated:
                 await asyncio.sleep(30.0)
                 continue
-            wanted = [x.strip().upper() for x in self.settings.kotak_chain_underlyings.split(",") if x.strip()] or list(self.council.focus)
+            wanted = [x.strip().upper() for x in self.settings.live_chain_underlyings.split(",") if x.strip()] or list(self.council.focus)
             for sym in wanted:
                 if self._stop.is_set() or not self.universe.has(sym):
                     continue
                 u = self.universe.get(sym)
                 cur = self.chains.get(sym)
                 expiry = cur.expiry if cur else self.chain_builder.nearest_expiry(u)
+                strikes = [r.strike for r in cur.rows] if cur else None
                 try:
-                    parsed = await self.kotak.option_chain(u, expiry)
+                    parsed = await self.live.option_quotes(u, expiry, strikes)
                     quotes = {self.chain_builder.option_symbol(sym, expiry, strike, ot): q for (strike, ot), q in parsed.items()}
                     if quotes:
                         self.chain_builder.apply_broker_quotes(quotes)
-                        self.kotak_chain_stats["quotes"] = len(quotes)
-                        self.kotak_chain_stats["last_ts"] = time.time()
-                    self.kotak_chain_stats["polls"] += 1
+                        self.live_chain_stats["quotes"] = len(quotes)
+                        self.live_chain_stats["last_ts"] = time.time()
+                    self.live_chain_stats["polls"] += 1
                 except Exception as exc:
-                    self.kotak_chain_stats["errors"] += 1
-                    self.kotak_chain_stats["last_error"] = str(exc)[:200]
-                    log.warning("kotak chain poll failed for %s: %s", sym, exc)
-                await asyncio.sleep(max(1.0, self.settings.kotak_chain_poll_seconds / max(1, len(wanted))))
+                    self.live_chain_stats["errors"] += 1
+                    self.live_chain_stats["last_error"] = str(exc)[:200]
+                    log.warning("live chain poll failed for %s: %s", sym, exc)
+                await asyncio.sleep(max(1.0, self.settings.live_chain_poll_seconds / max(1, len(wanted))))
 
     async def _risk_loop(self) -> None:
         while not self._stop.is_set():
@@ -317,7 +329,7 @@ class Terminal:
         return {
             "ts": time.time(), "product": PRODUCT, "version": __version__, "mode": self.mode.value, "env": self.env.value, "engine_running": self.engine_running, "paused": self.paused,
             "live_allowed": self.settings.live_allowed, "feed": self.feed.status(), "broker": self.broker.status(), "data_source": self.settings.data_source,
-            "kotak": {**self.kotak.status(), "chain": self.kotak_chain_stats} if self.kotak else None, "vix": {"ltp": vix.ltp, "change_pct": vix.change_pct} if vix else None,
+            "live_session": {**self.live.status(), "chain": self.live_chain_stats} if self.live else None, "vix": {"ltp": vix.ltp, "change_pct": vix.change_pct} if vix else None,
             "market": self.market_overview(), "risk": self.risk.describe(), "positions": self.positions.snapshot(), "orders": self.orders.recent(60),
             "pending_orders": [o.model_dump(mode="json") for o in self.orders.pending_approval()], "runs": [r.model_dump(mode="json") for r in self.strategies.runs.values() if r.status != "CLOSED"],
             "pending_plans": [p.model_dump(mode="json") for p in self.council.pending_plans()], "council": {"cycle": self.council.cycle, "busy": self.council.busy, "focus": self.council.focus,

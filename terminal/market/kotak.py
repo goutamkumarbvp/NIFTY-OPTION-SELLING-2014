@@ -19,7 +19,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from terminal.core.models import Exchange, OptionType, Underlying
 
@@ -201,6 +201,8 @@ def tick_from_message(msg: Any) -> Optional[Dict[str, Any]]:
 
 # --------------------------------------------------------------------------- session
 class KotakNeoSession:
+    provider = "kotak"
+
     def __init__(self, settings, runtime_dir: Optional[Path] = None) -> None:
         self.s = settings
         self.client = None
@@ -362,6 +364,14 @@ class KotakNeoSession:
                 self._option_cache[(u.symbol, expiry_iso, strike, ot)] = q
         return parsed
 
+    async def option_quotes(self, u: Underlying, expiry_iso: str, strikes: Optional[Iterable[float]] = None) -> Dict[Tuple[float, str], Dict[str, Any]]:
+        """Generic live-quote entry point (Kotak returns the whole chain; strikes are a filter)."""
+        parsed = await self.option_chain(u, expiry_iso)
+        if strikes:
+            wanted = {float(x) for x in strikes}
+            parsed = {k: v for k, v in parsed.items() if k[0] in wanted}
+        return parsed
+
     async def resolve_option(self, u: Underlying, expiry_iso: str, strike: float, option_type: OptionType) -> Optional[Dict[str, Any]]:
         key = (u.symbol, expiry_iso, float(strike), option_type.value)
         cached = self._option_cache.get(key)
@@ -398,7 +408,7 @@ class KotakNeoSession:
         return self.client.create_websocket()
 
     def status(self) -> dict:
-        return {"authenticated": self.authenticated, "logged_in_at": self.logged_in_at, "calls": self.calls, "errors": self.errors, "last_error": self.last_error,
+        return {"provider": self.provider, "authenticated": self.authenticated, "logged_in_at": self.logged_in_at, "calls": self.calls, "errors": self.errors, "last_error": self.last_error, "needs_daily_login": False,
                 "tokens": {k: v.get("trading_symbol") or v.get("token") for k, v in self.tokens.items()}, "missing_credentials": self.missing_credentials()}
 
 
