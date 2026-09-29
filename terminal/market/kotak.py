@@ -17,11 +17,11 @@ import datetime as dt
 import json
 import logging
 import re
-import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 from terminal.core.models import Exchange, OptionType, Underlying
+from terminal.market.live_base import LiveSession
 
 log = logging.getLogger("terminal.kotak")
 
@@ -200,24 +200,17 @@ def tick_from_message(msg: Any) -> Dict[str, Any] | None:
 
 
 # --------------------------------------------------------------------------- session
-class KotakNeoSession:
+class KotakNeoSession(LiveSession):
     provider = "kotak"
+    client_attr = "client"
 
     def __init__(self, settings, runtime_dir: Path | None = None) -> None:
-        self.s = settings
+        super().__init__(settings, runtime_dir)
         self.client = None
-        self.authenticated = False
-        self.logged_in_at: float = 0.0
-        self.last_error = ""
-        self.tokens: Dict[str, Dict[str, Any]] = {}  # our symbol -> {token, segment, trading_symbol}
-        self._option_cache: Dict[Tuple[str, str, float, str], Dict[str, Any]] = {}
-        self._by_trading_symbol: Dict[str, Tuple[str, str, float, str]] = {}
         self._expiry_cache: Dict[str, Dict[str, str]] = {}  # underlying -> {iso: kotak string}
-        self._lock = asyncio.Lock()
-        self.calls = 0
-        self.errors = 0
-        self.runtime_dir = runtime_dir
 
+    def _response_error(self, payload: Any) -> str | None:
+        return response_error(payload)
     # ---------------------------------------------------------------- auth
     def missing_credentials(self) -> List[str]:
         s = self.s
@@ -232,13 +225,9 @@ class KotakNeoSession:
             try:
                 result = await loop.run_in_executor(None, self._login_sync)
             except Exception as exc:
-                self.authenticated = False
-                self.last_error = f"{type(exc).__name__}: {exc}"[:300]
-                self.errors += 1
+                self._mark_login_failed(exc)
                 raise
-            self.authenticated = True
-            self.logged_in_at = time.time()
-            self.last_error = ""
+            self._mark_logged_in()
             return result
 
     def _login_sync(self) -> Dict[str, Any]:
@@ -259,31 +248,6 @@ class KotakNeoSession:
         if err:
             raise RuntimeError(f"KOTAK_MPIN_VALIDATE_FAILED: {err}")
         return {"login": _status(login), "validate": _status(validate)}
-
-    async def ensure(self) -> None:
-        if not self.authenticated or self.client is None:
-            await self.connect()
-
-    async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        """Run a synchronous SDK method by name in a worker thread (after ensuring login)."""
-        await self.ensure()
-        fn = getattr(self.client, method)
-        loop = asyncio.get_running_loop()
-        self.calls += 1
-        try:
-            out = await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
-        except Exception as exc:
-            self.errors += 1
-            self.last_error = f"{type(exc).__name__}: {exc}"[:300]
-            raise
-        err = response_error(out)
-        if err:
-            self.errors += 1
-            self.last_error = err
-            if "session" in err.lower() or "token" in err.lower() or "unauthor" in err.lower() or "401" in err:
-                self.authenticated = False
-            raise RuntimeError(err)
-        return out
 
     # ---------------------------------------------------------------- discovery
     async def resolve_index_tokens(self, universe: List[Underlying], include_vix: bool = True) -> Dict[str, Dict[str, Any]]:
@@ -408,18 +372,6 @@ class KotakNeoSession:
             raise RuntimeError("KOTAK_NOT_AUTHENTICATED")
         return self.client.create_websocket()
 
-    def _index_trading_symbol(self, key: Tuple[str, str, float, str], hit: Dict[str, Any]) -> None:
-        ts = str(hit.get("trading_symbol") or "")
-        if ts:
-            self._by_trading_symbol[ts.upper()] = key
-
-    def lookup_trading_symbol(self, trading_symbol: str) -> Tuple[str, str, float, str] | None:
-        """Broker trading symbol -> (underlying, expiry_iso, strike, 'CE'|'PE') if this session has seen it."""
-        return self._by_trading_symbol.get(str(trading_symbol).upper())
-
-    def status(self) -> dict:
-        return {"provider": self.provider, "authenticated": self.authenticated, "logged_in_at": self.logged_in_at, "calls": self.calls, "errors": self.errors, "last_error": self.last_error, "needs_daily_login": False,
-                "tokens": {k: v.get("trading_symbol") or v.get("token") for k, v in self.tokens.items()}, "missing_credentials": self.missing_credentials()}
 
 
 def _status(x: Any) -> str:

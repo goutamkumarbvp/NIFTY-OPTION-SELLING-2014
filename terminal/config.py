@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     users: str = Field("", alias="TERMINAL_USERS")  # "name:password:role,name2:password:role"
     runtime_dir: Path = Field(ROOT / "runtime", alias="RUNTIME_DIR")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+    log_format: str = Field("text", alias="LOG_FORMAT")  # text | json
 
     # --- modes / interlocks ----------------------------------------------
     terminal_mode: str = Field("MANUAL", alias="TERMINAL_MODE")  # MANUAL | AUTO
@@ -106,10 +107,13 @@ class Settings(BaseSettings):
     llm_model: str = Field("claude-opus-5-5", alias="LLM_MODEL")
     llm_api_key: str = Field("", alias="LLM_API_KEY")
     llm_timeout_seconds: float = Field(25.0, alias="LLM_TIMEOUT_SECONDS")
+    copilot_max_turns: int = Field(6, alias="COPILOT_MAX_TURNS")  # tool-call rounds per question
+    decision_score_minutes: int = Field(30, alias="DECISION_SCORE_MINUTES")  # horizon for council evaluation
 
     # --- notifications -----------------------------------------------------
     telegram_bot_token: str = Field("", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field("", alias="TELEGRAM_CHAT_ID")
+    telegram_commands_enabled: bool = Field(True, alias="TELEGRAM_COMMANDS_ENABLED")
     smtp_host: str = Field("", alias="SMTP_HOST")
     smtp_port: int = Field(587, alias="SMTP_PORT")
     smtp_user: str = Field("", alias="SMTP_USER")

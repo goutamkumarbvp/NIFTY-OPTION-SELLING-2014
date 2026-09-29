@@ -20,11 +20,11 @@ import asyncio
 import datetime as dt
 import json
 import logging
-import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 from terminal.core.models import Exchange, OptionType, Underlying
+from terminal.market.live_base import LiveSession
 
 log = logging.getLogger("terminal.zerodha")
 
@@ -124,27 +124,17 @@ def tick_from_kite(tick: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 # --------------------------------------------------------------------------- session
-class ZerodhaSession:
+class ZerodhaSession(LiveSession):
     provider = "zerodha"
+    needs_daily_login = True
+    client_attr = "kite"
 
     def __init__(self, settings, runtime_dir: Path | None = None) -> None:
-        self.s = settings
-        self.runtime_dir = runtime_dir
+        super().__init__(settings, runtime_dir)
         self.kite = None
         self.access_token: str = settings.zerodha_access_token or ""
-        self.authenticated = False
-        self.logged_in_at = 0.0
-        self.last_error = ""
-        self.user_id = ""
-        self.calls = 0
-        self.errors = 0
-        self.tokens: Dict[str, Dict[str, Any]] = {}
         self._instruments: Dict[str, List[Dict[str, Any]]] = {}
         self._instruments_day: dt.date | None = None
-        self._option_cache: Dict[Tuple[str, str, float, str], Dict[str, Any]] = {}
-        self._by_trading_symbol: Dict[str, Tuple[str, str, float, str]] = {}
-        self._lock = asyncio.Lock()
-
     # ---------------------------------------------------------------- auth
     def missing_credentials(self) -> List[str]:
         out = []
@@ -230,35 +220,13 @@ class ZerodhaSession:
                 kite = self._kite_class()(api_key=self.s.zerodha_api_key, access_token=token)
                 profile = await loop.run_in_executor(None, kite.profile)
             except Exception as exc:
-                self.authenticated = False
-                self.errors += 1
-                self.last_error = f"{type(exc).__name__}: {exc}"[:300]
+                self._mark_login_failed(exc)
                 raise RuntimeError(f"ZERODHA_LOGIN_FAILED: {exc} (access tokens expire daily; run scripts/zerodha_login.py)") from exc
             self.kite = kite
             self.access_token = token
             self.user_id = str(profile.get("user_id") or self.user_id)
-            self.authenticated = True
-            self.logged_in_at = time.time()
-            self.last_error = ""
+            self._mark_logged_in()
             return {"user_id": self.user_id, "user_name": profile.get("user_name")}
-
-    async def ensure(self) -> None:
-        if not self.authenticated or self.kite is None:
-            await self.connect()
-
-    async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        await self.ensure()
-        fn = getattr(self.kite, method)
-        loop = asyncio.get_running_loop()
-        self.calls += 1
-        try:
-            return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
-        except Exception as exc:
-            self.errors += 1
-            self.last_error = f"{type(exc).__name__}: {exc}"[:300]
-            if type(exc).__name__ in ("TokenException", "PermissionException"):
-                self.authenticated = False
-            raise
 
     # ---------------------------------------------------------------- instruments
     async def instruments(self, exchange: str) -> List[Dict[str, Any]]:
@@ -354,16 +322,3 @@ class ZerodhaSession:
         from kiteconnect import KiteTicker  # type: ignore
         return KiteTicker(self.s.zerodha_api_key, self.access_token)
 
-    def _index_trading_symbol(self, key: Tuple[str, str, float, str], hit: Dict[str, Any]) -> None:
-        ts = str(hit.get("trading_symbol") or "")
-        if ts:
-            self._by_trading_symbol[ts.upper()] = key
-
-    def lookup_trading_symbol(self, trading_symbol: str) -> Tuple[str, str, float, str] | None:
-        """Broker trading symbol -> (underlying, expiry_iso, strike, 'CE'|'PE') if this session has seen it."""
-        return self._by_trading_symbol.get(str(trading_symbol).upper())
-
-    def status(self) -> dict:
-        return {"provider": self.provider, "authenticated": self.authenticated, "logged_in_at": self.logged_in_at, "user_id": self.user_id, "calls": self.calls, "errors": self.errors,
-                "last_error": self.last_error, "tokens": {k: v.get("trading_symbol") or v.get("token") for k, v in self.tokens.items()}, "missing_credentials": self.missing_credentials(),
-                "needs_daily_login": True}

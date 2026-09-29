@@ -16,13 +16,13 @@ import asyncio
 import datetime as dt
 import json
 import logging
-import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 import httpx
 
 from terminal.core.models import Exchange, OptionType, Underlying
+from terminal.market.live_base import LiveSession
 
 log = logging.getLogger("terminal.angel")
 
@@ -134,29 +134,25 @@ def response_error(payload: Any) -> str | None:
 
 
 # --------------------------------------------------------------------------- session
-class AngelOneSession:
+class AngelOneSession(LiveSession):
     provider = "angel"
+    client_attr = "client"
 
     def __init__(self, settings, runtime_dir: Path | None = None) -> None:
-        self.s = settings
-        self.runtime_dir = runtime_dir
+        super().__init__(settings, runtime_dir)
         self.client = None
         self.jwt_token = ""
         self.feed_token = ""
         self.refresh_token = ""
-        self.authenticated = False
-        self.logged_in_at = 0.0
-        self.last_error = ""
-        self.user_id = ""
-        self.calls = 0
-        self.errors = 0
-        self.tokens: Dict[str, Dict[str, Any]] = {}
         self._master: List[Dict[str, Any]] = []
         self._master_day: dt.date | None = None
-        self._option_cache: Dict[Tuple[str, str, float, str], Dict[str, Any]] = {}
-        self._by_trading_symbol: Dict[str, Tuple[str, str, float, str]] = {}
-        self._lock = asyncio.Lock()
 
+    def _response_error(self, payload: Any) -> str | None:
+        return response_error(payload)
+
+    def _auth_error(self, message: str) -> bool:
+        m = message.lower()
+        return any(x in m for x in ("token", "session", "ag8001", "ab8050", "unauthor"))
     # ---------------------------------------------------------------- auth
     def missing_credentials(self) -> List[str]:
         s = self.s
@@ -171,13 +167,9 @@ class AngelOneSession:
             try:
                 result = await loop.run_in_executor(None, self._login_sync)
             except Exception as exc:
-                self.authenticated = False
-                self.errors += 1
-                self.last_error = f"{type(exc).__name__}: {exc}"[:300]
+                self._mark_login_failed(exc)
                 raise
-            self.authenticated = True
-            self.logged_in_at = time.time()
-            self.last_error = ""
+            self._mark_logged_in()
             return result
 
     def _login_sync(self) -> Dict[str, Any]:
@@ -200,30 +192,6 @@ class AngelOneSession:
         self.feed_token = str(data.get("feedToken") or client.getfeedToken() or "")
         self.user_id = str(data.get("clientcode") or s.angel_client_code)
         return {"user_id": self.user_id, "name": data.get("name")}
-
-    async def ensure(self) -> None:
-        if not self.authenticated or self.client is None:
-            await self.connect()
-
-    async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        await self.ensure()
-        fn = getattr(self.client, method)
-        loop = asyncio.get_running_loop()
-        self.calls += 1
-        try:
-            out = await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
-        except Exception as exc:
-            self.errors += 1
-            self.last_error = f"{type(exc).__name__}: {exc}"[:300]
-            raise
-        err = response_error(out)
-        if err:
-            self.errors += 1
-            self.last_error = err
-            if "token" in err.lower() or "session" in err.lower() or "AG8001" in err or "AB8050" in err:
-                self.authenticated = False
-            raise RuntimeError(err)
-        return out
 
     # ---------------------------------------------------------------- instrument master
     async def master(self) -> List[Dict[str, Any]]:
@@ -333,16 +301,3 @@ class AngelOneSession:
         from SmartApi.smartWebSocketV2 import SmartWebSocketV2  # type: ignore
         return SmartWebSocketV2(self.jwt_token, self.s.angel_api_key, self.s.angel_client_code, self.feed_token, max_retry_attempt=5)
 
-    def _index_trading_symbol(self, key: Tuple[str, str, float, str], hit: Dict[str, Any]) -> None:
-        ts = str(hit.get("trading_symbol") or "")
-        if ts:
-            self._by_trading_symbol[ts.upper()] = key
-
-    def lookup_trading_symbol(self, trading_symbol: str) -> Tuple[str, str, float, str] | None:
-        """Broker trading symbol -> (underlying, expiry_iso, strike, 'CE'|'PE') if this session has seen it."""
-        return self._by_trading_symbol.get(str(trading_symbol).upper())
-
-    def status(self) -> dict:
-        return {"provider": self.provider, "authenticated": self.authenticated, "logged_in_at": self.logged_in_at, "user_id": self.user_id, "calls": self.calls, "errors": self.errors,
-                "last_error": self.last_error, "tokens": {k: v.get("trading_symbol") or v.get("token") for k, v in self.tokens.items()}, "missing_credentials": self.missing_credentials(),
-                "needs_daily_login": False}

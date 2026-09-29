@@ -1,0 +1,39 @@
+NIFTY AI OPTIONS TERMINAL V30  —  QUICK START
+=============================================
+Build: {BUILD}
+
+Requirements: Python 3.11 or newer (https://www.python.org/downloads/), any OS.
+
+1. Unzip this folder anywhere.
+
+2. Start (paper trading on the built-in market simulator — no account needed):
+     Windows :  double-click  scripts\start_terminal.bat
+     Mac/Linux:  bash scripts/start_terminal.sh
+   This creates a virtual environment, installs dependencies, copies .env.example
+   to .env and starts the server. The preflight banner shows exactly which
+   interlocks and providers are active.
+
+3. Open  http://127.0.0.1:8600  in your browser.
+   - Click "Open Gate" to allow entries.
+   - MANUAL mode: the AI council proposes trades in the Approvals panel; you approve.
+   - AUTO mode: the council deploys and manages trades inside the risk limits.
+   - KILL SWITCH flattens everything and returns to MANUAL.
+   - Copilot panel: ask the AI about the market, risk or a structure; it can only PROPOSE.
+   - Risk Control shows the operating window and any pending square-offs being retried.
+
+4. Live market data (optional) — copy .env.live to .env, fill ONE provider, then:
+     Kotak Neo :  pip install -r requirements-kotak.txt    python scripts/kotak_check.py
+     Zerodha   :  pip install -r requirements-zerodha.txt  python scripts/zerodha_login.py (daily)
+                                                           python scripts/zerodha_check.py
+     Angel One :  pip install -r requirements-angel.txt    python scripts/angel_check.py
+
+5. Live order placement stays OFF until ALL of these are set in .env:
+     TRADING_ENV=LIVE   LIVE_TRADING=true   LIVE_ORDERS_ENABLED=true   BROKER=<kotak|zerodha|angel>
+   Run a two-week paper soak on real data before enabling them.
+
+Telegram: set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID; commands /status /pnl /positions /pause /resume /kill
+Metrics : http://127.0.0.1:8600/metrics (Prometheus)      API docs: http://127.0.0.1:8600/api/docs
+Tests   : python -m pytest -q                              Docs: README.md, docs/ARCHITECTURE.md
+Docker  : docker compose up --build                        systemd: deploy/terminal.service
+
+Never share your .env or paste credentials anywhere. Test in PAPER mode first.
