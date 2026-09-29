@@ -10,7 +10,8 @@ from terminal.config import Settings, reset_settings_cache
 
 def make_settings(**overrides) -> Settings:
     base = dict(RUNTIME_DIR=tempfile.mkdtemp(prefix="aiterm-"), SAFETY_GATE_OPEN_ON_START="true", TICK_INTERVAL_SECONDS="0.2", AGENT_CYCLE_SECONDS="60",
-                TERMINAL_MODE="MANUAL", TRADING_ENV="PAPER", LLM_ENABLED="false")
+                TERMINAL_MODE="MANUAL", TRADING_ENV="PAPER", LLM_ENABLED="false", TERMINAL_START_TIME="00:00", TERMINAL_END_TIME="23:59",
+                EXIT_RETRY_SECONDS="0.5")
     base.update({k: str(v) for k, v in overrides.items()})
     return Settings(_env_file=None, **base)
 

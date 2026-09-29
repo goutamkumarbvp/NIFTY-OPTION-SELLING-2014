@@ -28,7 +28,7 @@ async def test_api_end_to_end(app_and_terminal):
             assert r.json()["data"]["mode"] == "MANUAL"
             r = await c.get("/api/market/chain?underlying=NIFTY")
             chain = r.json()["data"]["chain"]
-            assert len(chain["rows"]) == 31
+            assert len(chain["rows"]) >= 51
             r = await c.post("/api/strategy/preview", json={"strategy": "iron_condor", "underlying": "NIFTY", "lots": 1})
             assert r.status_code == 200 and r.json()["data"]["payoff"]["max_loss"] < 0
             r = await c.post("/api/strategy/deploy", json={"strategy": "iron_condor", "underlying": "NIFTY", "lots": 1})

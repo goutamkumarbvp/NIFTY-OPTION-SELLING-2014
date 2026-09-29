@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     naked_short_allowed: bool = Field(True, alias="NAKED_SHORT_ALLOWED")
 
     # --- strategy schedule -----------------------------------------------
+    terminal_start_time: str = Field("09:00", alias="TERMINAL_START_TIME")  # terminal operating window (IST)
+    terminal_end_time: str = Field("23:30", alias="TERMINAL_END_TIME")      # everything still open is squared off here
+    exit_retry_seconds: float = Field(10.0, alias="EXIT_RETRY_SECONDS")     # re-send an unfilled square-off every N seconds
+    exit_max_attempts: int = Field(60, alias="EXIT_MAX_ATTEMPTS")
     entry_window_start: str = Field("09:20", alias="ENTRY_WINDOW_START")
     entry_window_end: str = Field("14:30", alias="ENTRY_WINDOW_END")
     square_off_time: str = Field("15:12", alias="SQUARE_OFF_TIME")

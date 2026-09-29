@@ -63,10 +63,13 @@ class StrategyEngine:
                 # should not happen: plan level approval already happened; treat as pending
                 raise ValueError("ORDER_PENDING_APPROVAL")
             if order.status != OrderStatus.FILLED:
-                # roll back partially filled legs
+                # roll back the legs that did fill (each is a reducing order on its own symbol)
                 for f in filled_legs:
                     back = self.t.orders.build(f.symbol, Side.BUY if f.side == Side.SELL else Side.SELL, f.lots, src, run_id=run.id, tag=plan.strategy, reason="entry rollback")
-                    await self.t.orders.submit(back, actor, protective=True)
+                    rb = await self.t.orders.submit(back, actor, protective=True)
+                    if rb.status != OrderStatus.FILLED:
+                        self.t.log("CRITICAL", "strategy", f"entry rollback of {f.symbol} failed: {rb.message}; check positions manually")
+                        await self.t.alerts.emit("CRITICAL", "trade", f"Entry rollback failed: {f.symbol}", rb.message)
                 plan.status = "FAILED"
                 self.t.db.save_plan(plan.model_dump(mode="json"))
                 raise ValueError(f"LEG_FAILED:{leg.symbol}:{order.message}")
@@ -85,25 +88,37 @@ class StrategyEngine:
         return run
 
     async def exit_run(self, run_id: str, actor: str, reason: str, source: OrderSource = OrderSource.STRATEGY) -> StrategyRun:
+        """Square off a run. Idempotent: a run already EXITING/CLOSED is left to the
+        exit guard, so a second stop-loss layer never sends duplicate orders."""
         run = self.runs[run_id]
         if run.status != "ACTIVE":
             return run
         run.status = "EXITING"
+        run.exit_reason = reason
+        run.notes.append(f"exit requested: {reason} ({source.value})")
+        self.t.audit.record("STRATEGY_EXIT_REQUESTED", {"id": run.id, "reason": reason}, actor)
         # buy back shorts before selling longs
-        ordered = sorted(run.legs, key=lambda l: 0 if l.side == Side.SELL else 1)
-        for leg in ordered:
-            pos = self.t.positions.positions.get(leg.symbol)
-            if not pos or pos.net_qty == 0:
-                continue
-            lots = min(leg.lots, pos.lots) or leg.lots
-            side = Side.BUY if leg.side == Side.SELL else Side.SELL
-            order = self.t.orders.build(leg.symbol, side, lots, source, run_id=run.id, tag=run.strategy, reason=reason)
-            await self.t.orders.submit(order, actor, protective=True)
-        self.mark_closed(run, reason)
-        self.t.audit.record("STRATEGY_EXITED", {"id": run.id, "reason": reason, "pnl": run.realized_pnl}, actor)
-        await self.t.alerts.emit("INFO" if run.realized_pnl >= 0 else "WARNING", "trade", f"Exit {SPECS[run.strategy].name} {run.underlying}: {reason}", f"P&L ₹{run.realized_pnl:,.0f}", market=run.exchange.value)
-        await self.t.bus.publish("strategy.closed", run)
+        for leg in sorted(run.legs, key=lambda l: 0 if l.side == Side.SELL else 1):
+            await self.t.exit_guard.request(leg.symbol, reason, source, run_id=run.id, actor=actor)
+        await self.check_exiting()
         return run
+
+    def _legs_flat(self, run: StrategyRun) -> bool:
+        for leg in run.legs:
+            pos = self.t.positions.positions.get(leg.symbol)
+            if pos is not None and pos.net_qty != 0 and (pos.strategy_run_id in (None, run.id)):
+                return False
+        return True
+
+    async def check_exiting(self) -> None:
+        """Finalise runs whose legs are all flat (called after exits and by the guard tick)."""
+        for run in list(self.runs.values()):
+            if run.status == "EXITING" and self._legs_flat(run):
+                reason = run.exit_reason or "EXIT"
+                self.mark_closed(run, reason)
+                self.t.audit.record("STRATEGY_EXITED", {"id": run.id, "reason": reason, "pnl": run.realized_pnl}, "strategy-engine")
+                await self.t.alerts.emit("INFO" if run.realized_pnl >= 0 else "WARNING", "trade", f"Exit {SPECS[run.strategy].name} {run.underlying}: {reason}", f"P&L ₹{run.realized_pnl:,.0f}", market=run.exchange.value)
+                await self.t.bus.publish("strategy.closed", run)
 
     def mark_closed(self, run: StrategyRun, reason: str) -> None:
         if run.status == "CLOSED":
@@ -150,6 +165,7 @@ class StrategyEngine:
             elif self.t.scheduler.must_square_off(u):
                 reason = "SQUARE_OFF_TIME"
             if reason:
+                run.notes.append(f"stop-loss layer: strategy-engine → {reason}")
                 await self.exit_run(run.id, "strategy-engine", reason)
                 continue
             await self._maybe_adjust(run, u)

@@ -25,6 +25,8 @@ class Scheduler:
 
     def can_enter(self, u: Underlying, now: Optional[dt.datetime] = None) -> tuple[bool, str]:
         now = now or now_ist()
+        if not self.in_operating_window(now):
+            return False, "OUTSIDE_OPERATING_HOURS"
         if self.session(u, now) != "OPEN":
             return False, "SESSION_CLOSED"
         if self.sim_always_open:
@@ -39,6 +41,17 @@ class Scheduler:
         if t > end:
             return False, "AFTER_ENTRY_WINDOW"
         return True, "OK"
+
+    def in_operating_window(self, now: Optional[dt.datetime] = None) -> bool:
+        """Terminal-wide window (default 09:00–23:30 IST): no council cycles and no
+        new entries outside it; exits are always allowed."""
+        now = now or now_ist()
+        t = now.time()
+        return self._t("terminal_start_time") <= t < self._t("terminal_end_time")
+
+    def past_end_time(self, now: Optional[dt.datetime] = None) -> bool:
+        now = now or now_ist()
+        return now.time() >= self._t("terminal_end_time")
 
     def must_square_off(self, u: Underlying, now: Optional[dt.datetime] = None) -> bool:
         now = now or now_ist()
@@ -57,6 +70,8 @@ class Scheduler:
         return {
             "now_ist": now.isoformat(timespec="seconds"),
             "holiday": is_holiday(now.date()),
+            "operating_window": [self.overrides.get("terminal_start_time", self.s.terminal_start_time), self.overrides.get("terminal_end_time", self.s.terminal_end_time)],
+            "in_operating_window": self.in_operating_window(now),
             "entry_window": [self.overrides.get("entry_window_start", self.s.entry_window_start), self.overrides.get("entry_window_end", self.s.entry_window_end)],
             "square_off": self.overrides.get("square_off_time", self.s.square_off_time),
             "mcx_square_off": self.overrides.get("mcx_square_off_time", self.s.mcx_square_off_time),

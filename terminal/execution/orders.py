@@ -36,12 +36,48 @@ class OrderManager:
             return False
         return (pos.net_qty > 0 and order.side == Side.SELL) or (pos.net_qty < 0 and order.side == Side.BUY)
 
+    def reducing_orders(self, symbol: str) -> List[Order]:
+        pos = self.t.positions.positions.get(symbol)
+        if not pos or pos.net_qty == 0:
+            return []
+        side = Side.BUY if pos.net_qty < 0 else Side.SELL
+        return [o for o in self.orders.values() if o.symbol == symbol and o.side == side]
+
+    def in_flight_reducing_qty(self, symbol: str) -> int:
+        """Units of `symbol` already covered by working (unfilled) exit orders."""
+        return sum(o.quantity - o.filled_qty for o in self.reducing_orders(symbol) if o.status in (OrderStatus.OPEN, OrderStatus.PENDING, OrderStatus.PENDING_APPROVAL))
+
     async def submit(self, order: Order, actor: str = "system", protective: bool = False) -> Order:
         """Submit an order through every gate. Returns the (possibly rejected) order."""
         self._roll()
         async with self._lock:
-            self.orders[order.id] = order
             reducing = self.is_reducing(order)
+            if protective and not reducing:
+                # an exit for a position that is already flat must never become a fresh entry
+                order.status = OrderStatus.REJECTED
+                order.message = "NO_POSITION_TO_EXIT"
+                order.updated_at = time.time()
+                self.orders[order.id] = order
+                self._persist(order)
+                self.t.audit.record("EXIT_WITHOUT_POSITION_SUPPRESSED", {"symbol": order.symbol, "side": order.side.value, "reason": order.reason}, actor)
+                return order
+            if reducing:
+                pos = self.t.positions.positions[order.symbol]
+                remaining = abs(pos.net_qty) - self.in_flight_reducing_qty(order.symbol)
+                if remaining <= 0:
+                    order.status = OrderStatus.REJECTED
+                    order.message = "DUPLICATE_EXIT_SUPPRESSED"
+                    order.updated_at = time.time()
+                    self.orders[order.id] = order
+                    self._persist(order)
+                    self.t.audit.record("ORDER_DUPLICATE_EXIT_SUPPRESSED", {"symbol": order.symbol, "side": order.side.value, "lots": order.lots, "reason": order.reason}, actor)
+                    self.t.log("WARNING", "orders", f"duplicate exit suppressed: {order.side.value} {order.lots}L {order.symbol} ({order.reason})")
+                    return order
+                if order.quantity > remaining:
+                    # never flip a position through zero with an exit order
+                    order.lots = max(1, remaining // order.lot_size)
+                    order.message = f"EXIT_QTY_CAPPED_TO_{order.quantity}"
+            self.orders[order.id] = order
             decision = self.t.risk.pre_trade(order, reducing=reducing or protective)
             if not decision["allowed"]:
                 order.status = OrderStatus.RISK_REJECTED
@@ -115,21 +151,19 @@ class OrderManager:
         return order
 
     async def flatten_all(self, source: OrderSource, actor: str, reason: str) -> List[Order]:
-        """Close every open position with market orders (protective path)."""
+        """Close every open position through the exit guard (deduplicated, retried until flat)."""
         out: List[Order] = []
+        for run in list(self.t.strategies.runs.values()):
+            if run.status == "ACTIVE":
+                run.status = "EXITING"
+                run.exit_reason = reason
         # buy back shorts first (margin release), then sell longs
         positions = sorted(self.t.positions.open_positions(), key=lambda p: p.net_qty)
         for p in positions:
-            lots = p.lots or 1
-            side = Side.BUY if p.net_qty < 0 else Side.SELL
-            try:
-                o = self.build(p.symbol, side, lots, source, run_id=p.strategy_run_id, tag="flatten", reason=reason)
-            except ValueError:
-                continue
-            out.append(await self.submit(o, actor, protective=True))
-        for run in list(self.t.strategies.runs.values()):
-            if run.status == "ACTIVE":
-                self.t.strategies.mark_closed(run, reason)
+            o = await self.t.exit_guard.request(p.symbol, reason, source, run_id=p.strategy_run_id, actor=actor)
+            if o is not None:
+                out.append(o)
+        await self.t.strategies.check_exiting()
         return out
 
     def pending_approval(self) -> List[Order]:

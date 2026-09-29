@@ -96,6 +96,8 @@ class LoginBody(BaseModel):
 
 
 class ScheduleBody(BaseModel):
+    terminal_start_time: Optional[str] = None
+    terminal_end_time: Optional[str] = None
     entry_window_start: Optional[str] = None
     entry_window_end: Optional[str] = None
     square_off_time: Optional[str] = None
@@ -364,8 +366,10 @@ def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
         pos = t.positions.positions.get(symbol.upper())
         if not pos:
             raise HTTPException(status_code=404, detail="NO_POSITION")
-        order = t.orders.build(symbol.upper(), Side.BUY if pos.net_qty < 0 else Side.SELL, pos.lots or 1, OrderSource.MANUAL, run_id=pos.strategy_run_id, tag="manual", reason="close position")
-        return ok((await t.orders.submit(order, user["username"], protective=True)).model_dump(mode="json"))
+        order = await t.exit_guard.request(symbol.upper(), "MANUAL_CLOSE", OrderSource.MANUAL, run_id=pos.strategy_run_id, actor=user["username"])
+        if order is None:
+            raise ValueError("EXIT_ALREADY_IN_FLIGHT_OR_FLAT")
+        return ok(order.model_dump(mode="json"))
 
     # ------------------------------------------------------------------ approvals (council plans)
     @app.get("/api/approvals")
@@ -412,6 +416,10 @@ def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
         return ok(body.events)
 
     # ------------------------------------------------------------------ risk
+    @app.get("/api/exits")
+    async def exits(user: dict = Depends(require("viewer"))):
+        return ok(T().exit_guard.describe())
+
     @app.get("/api/risk")
     async def risk(user: dict = Depends(require("viewer"))):
         return ok(T().risk.describe())

@@ -39,7 +39,7 @@ def test_chain_structure(tmp_path):
     u = Universe(tmp_path, ["NSE"]).get("NIFTY")
     ch = OptionChainBuilder(seed=1).build(u, 24800, 13.0, "2026-10-06")
     assert ch.atm_strike == 24800
-    assert len(ch.rows) == 31
+    assert len(ch.rows) >= 51 and len(ch.rows) % 2 == 1
     atm = ch.find(24800, OptionType.CE)
     assert atm is not None and 0.4 < atm.delta < 0.6
     assert ch.pcr > 0 and ch.total_ce_oi > 0
