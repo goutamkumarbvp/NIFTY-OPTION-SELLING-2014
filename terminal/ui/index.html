@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NIFTY AI Options Terminal</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230b1220'/><path d='M20 70 L40 45 L55 58 L80 28' stroke='%2322d3ee' stroke-width='9' fill='none' stroke-linecap='round'/></svg>">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div id="login" class="login hidden">
+  <div class="login-card">
+    <div class="brand"><span class="logo"></span><div><b>NIFTY AI OPTIONS TERMINAL</b><small>NSE · BSE · MCX · Agent Council</small></div></div>
+    <input id="login-user" placeholder="username" autocomplete="username">
+    <input id="login-pass" placeholder="password" type="password" autocomplete="current-password">
+    <input id="login-token" placeholder="…or API token">
+    <button id="login-btn" class="btn primary">Sign in</button>
+    <div id="login-err" class="err"></div>
+  </div>
+</div>
+
+<div id="shell" class="shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="logo"></span><div><b>AI OPTIONS<br>TERMINAL</b><small id="version">v30</small></div></div>
+    <nav id="nav">
+      <a data-view="overview" class="active"><i>◈</i>Overview</a>
+      <a data-view="chain"><i>≣</i>Option Chain</a>
+      <a data-view="council"><i>◉</i>AI Council</a>
+      <a data-view="strategy"><i>⌘</i>Strategies</a>
+      <a data-view="approvals"><i>✓</i>Approvals <b id="nav-approvals" class="badge hidden">0</b></a>
+      <a data-view="trading"><i>⇄</i>Orders &amp; Positions</a>
+      <a data-view="risk"><i>⛨</i>Risk Control</a>
+      <a data-view="reports"><i>▤</i>Reports</a>
+      <a data-view="system"><i>⚙</i>System</a>
+      <a data-view="settings"><i>☰</i>Settings</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="kv"><span>Feed</span><b id="sb-feed">—</b></div>
+      <div class="kv"><span>Broker</span><b id="sb-broker">—</b></div>
+      <div class="kv"><span>Council</span><b id="sb-council">—</b></div>
+      <div class="kv"><span>Clock IST</span><b id="sb-clock">—</b></div>
+      <div class="kv"><span>User</span><b id="sb-user">—</b></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="modes">
+        <div class="seg" id="mode-seg">
+          <button data-mode="MANUAL" class="active">MANUAL</button>
+          <button data-mode="AUTO">AUTO</button>
+        </div>
+        <span id="env-badge" class="pill env">PAPER</span>
+        <span id="risk-badge" class="pill risk">GREEN</span>
+        <span id="gate-badge" class="pill gate closed">GATE CLOSED</span>
+        <span id="engine-badge" class="pill">ENGINE</span>
+      </div>
+      <div class="ticker" id="ticker"></div>
+      <div class="actions">
+        <button id="btn-gate" class="btn">Open Gate</button>
+        <button id="btn-pause" class="btn">Pause</button>
+        <button id="btn-cycle" class="btn ghost">Run Council</button>
+        <button id="btn-kill" class="btn danger">KILL SWITCH</button>
+      </div>
+    </header>
+    <section id="views" class="views">
+      <div id="view-overview" class="view active"></div>
+      <div id="view-chain" class="view"></div>
+      <div id="view-council" class="view"></div>
+      <div id="view-strategy" class="view"></div>
+      <div id="view-approvals" class="view"></div>
+      <div id="view-trading" class="view"></div>
+      <div id="view-risk" class="view"></div>
+      <div id="view-reports" class="view"></div>
+      <div id="view-system" class="view"></div>
+      <div id="view-settings" class="view"></div>
+    </section>
+  </main>
+</div>
+<div id="toasts" class="toasts"></div>
+<div id="modal" class="modal hidden"><div class="modal-card"><div id="modal-body"></div><div class="modal-actions"><button id="modal-cancel" class="btn">Cancel</button><button id="modal-ok" class="btn danger">Confirm</button></div></div></div>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
