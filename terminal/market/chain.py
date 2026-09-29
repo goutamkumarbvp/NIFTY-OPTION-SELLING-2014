@@ -11,19 +11,19 @@ from __future__ import annotations
 import datetime as dt
 import math
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 from terminal.core.clock import expiry_series, now_ist, parse_hhmm, year_fraction_to_expiry
 from terminal.core.models import ChainRow, OptionChain, OptionQuote, OptionType, Underlying
 from terminal.market.pricing import bs_greeks, bs_price, implied_vol, round_to_tick
+from terminal.market.sim_oi import SimulatedOIModel
 
 
 class OptionChainBuilder:
-    def __init__(self, seed: int = 7, strikes_each_side: int = 25) -> None:
+    def __init__(self, seed: int = 7, strikes_each_side: int = 25, oi_model: SimulatedOIModel | None = None) -> None:
         self.rng = random.Random(seed)
         self.strikes_each_side = strikes_each_side
-        self._oi: Dict[Tuple[str, str, float, str], int] = {}
-        self._oi_day_open: Dict[Tuple[str, str, float, str], int] = {}
+        self.oi_model = oi_model or SimulatedOIModel(seed)
         self._broker_quotes: Dict[str, dict] = {}
         self._last_spot: Dict[str, float] = {}
 
@@ -48,23 +48,6 @@ class OptionChainBuilder:
         curve = 3.2 * k * k / max(math.sqrt(t * 52), 0.35)
         return max(0.05, base_iv * (1 + skew + curve))
 
-    def _model_oi(self, key: Tuple[str, str, float, str], distance_steps: float, is_put: bool, spot_move: float) -> int:
-        if key not in self._oi:
-            # writers concentrate 3-6 strikes OTM: CE walls above spot, PE walls below
-            peak = -4.0 if is_put else 4.0
-            shape = math.exp(-0.16 * abs(distance_steps - peak)) + 0.35 * math.exp(-0.3 * abs(distance_steps))
-            base = int(2_200_000 * shape * (1.12 if is_put else 1.0))
-            base = int(base * self.rng.uniform(0.7, 1.35))
-            self._oi[key] = base
-            self._oi_day_open[key] = base
-        # writers add OI at OTM strikes; unwind near ATM when spot moves toward them
-        drift = self.rng.gauss(0.0, 0.004)
-        if abs(distance_steps) < 2:
-            drift -= 0.002 * (1 if spot_move != 0 else 0)
-        elif 2 <= abs(distance_steps) <= 6:
-            drift += 0.0025
-        self._oi[key] = max(1000, int(self._oi[key] * (1 + drift)))
-        return self._oi[key]
 
     def apply_broker_quotes(self, quotes: Dict[str, dict]) -> None:
         self._broker_quotes.update(quotes)
@@ -79,8 +62,8 @@ class OptionChainBuilder:
         return f"{underlying}{exp_date.strftime('%d%b%y').upper()}{int(strike)}{option_type}"
 
     # ------------------------------------------------------------------ build
-    def build(self, u: Underlying, spot: float, vix: float, expiry: Optional[str] = None, now: Optional[dt.datetime] = None,
-              extra_strikes: Optional[set] = None) -> OptionChain:
+    def build(self, u: Underlying, spot: float, vix: float, expiry: str | None = None, now: dt.datetime | None = None,
+              extra_strikes: set | None = None) -> OptionChain:
         """Build the chain around ATM. ``extra_strikes`` (e.g. strikes held in open
         positions) are always included so marks never go stale after a big move."""
         now = now or now_ist()
@@ -129,12 +112,8 @@ class OptionChainBuilder:
                     oi_change = int(bq.get("oi_change", 0))
                 else:
                     ltp = bs_price(spot, strike, t, iv, is_call)
-                    oi = self._model_oi(key, i, not is_call, spot_move)
-                    oi_change = oi - self._oi_day_open.get(key, oi)
-                    vol = int(oi * self.rng.uniform(0.15, 0.6) * math.exp(-0.08 * abs(i)))
-                    if abs(i) > half:
-                        oi = int(oi * 0.2)
-                        vol = int(vol * 0.2)
+                    oi, oi_change = self.oi_model.oi(key, i, not is_call, spot_move, in_window=abs(i) <= half)
+                    vol = self.oi_model.volume(oi, i)
                 ltp = max(0.05, round_to_tick(ltp, u.tick_size))
                 g = bs_greeks(spot, strike, t, iv, is_call)
                 spread = max(u.tick_size, round_to_tick(ltp * (0.004 + 0.02 * abs(i) / self.strikes_each_side), u.tick_size))
@@ -175,4 +154,4 @@ class OptionChainBuilder:
         return best
 
     def reset_day(self) -> None:
-        self._oi_day_open = dict(self._oi)
+        self.oi_model.reset_day()

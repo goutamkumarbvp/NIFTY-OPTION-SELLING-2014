@@ -16,13 +16,13 @@ import asyncio
 import datetime as dt
 import json
 import logging
-import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 import httpx
 
 from terminal.core.models import Exchange, OptionType, Underlying
+from terminal.market.live_base import LiveSession
 
 log = logging.getLogger("terminal.angel")
 
@@ -47,7 +47,7 @@ def _f(v: Any, default: float = 0.0) -> float:
         return default
 
 
-def parse_expiry(value: Any) -> Optional[dt.date]:
+def parse_expiry(value: Any) -> dt.date | None:
     if value in (None, ""):
         return None
     s = str(value).strip()
@@ -75,7 +75,7 @@ def option_type_of(p: Dict[str, Any]) -> str:
     return ""
 
 
-def choose_index(rows: Iterable[Dict[str, Any]], names: List[str], exchange: str) -> Optional[Dict[str, Any]]:
+def choose_index(rows: Iterable[Dict[str, Any]], names: List[str], exchange: str) -> Dict[str, Any] | None:
     wanted = [n.upper() for n in names]
     parsed = [parse_master_row(r) for r in rows if str(r.get("exch_seg", "")).upper() == exchange]
     for w in wanted:
@@ -85,7 +85,7 @@ def choose_index(rows: Iterable[Dict[str, Any]], names: List[str], exchange: str
     return None
 
 
-def choose_nearest_future(rows: Iterable[Dict[str, Any]], name: str, exchange: str, today: dt.date) -> Optional[Dict[str, Any]]:
+def choose_nearest_future(rows: Iterable[Dict[str, Any]], name: str, exchange: str, today: dt.date) -> Dict[str, Any] | None:
     futs = [p for p in (parse_master_row(r) for r in rows) if p["exchange"] == exchange and p["name"].upper() == name.upper() and p["instrument_type"].startswith("FUT") and p["expiry"] and p["expiry"] >= today]
     return min(futs, key=lambda p: p["expiry"]) if futs else None
 
@@ -116,7 +116,7 @@ def parse_market_quote(q: Dict[str, Any]) -> Dict[str, Any]:
             "prev_close": _f(q.get("close")), "open": _f(q.get("open")), "high": _f(q.get("high")), "low": _f(q.get("low"))}
 
 
-def tick_from_smart(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def tick_from_smart(msg: Dict[str, Any]) -> Dict[str, Any] | None:
     """SmartWebSocketV2 parsed packet -> plain fields (prices are in paise)."""
     ltp = _f(msg.get("last_traded_price")) / 100.0
     if ltp <= 0:
@@ -127,35 +127,32 @@ def tick_from_smart(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "volume": int(_f(msg.get("volume_trade_for_the_day"))), "oi": int(_f(msg.get("open_interest")))}
 
 
-def response_error(payload: Any) -> Optional[str]:
+def response_error(payload: Any) -> str | None:
     if isinstance(payload, dict) and payload.get("status") is False:
         return str(payload.get("message") or payload.get("errorcode") or payload)[:300]
     return None
 
 
 # --------------------------------------------------------------------------- session
-class AngelOneSession:
+class AngelOneSession(LiveSession):
     provider = "angel"
+    client_attr = "client"
 
-    def __init__(self, settings, runtime_dir: Optional[Path] = None) -> None:
-        self.s = settings
-        self.runtime_dir = runtime_dir
+    def __init__(self, settings, runtime_dir: Path | None = None) -> None:
+        super().__init__(settings, runtime_dir)
         self.client = None
         self.jwt_token = ""
         self.feed_token = ""
         self.refresh_token = ""
-        self.authenticated = False
-        self.logged_in_at = 0.0
-        self.last_error = ""
-        self.user_id = ""
-        self.calls = 0
-        self.errors = 0
-        self.tokens: Dict[str, Dict[str, Any]] = {}
         self._master: List[Dict[str, Any]] = []
-        self._master_day: Optional[dt.date] = None
-        self._option_cache: Dict[Tuple[str, str, float, str], Dict[str, Any]] = {}
-        self._lock = asyncio.Lock()
+        self._master_day: dt.date | None = None
 
+    def _response_error(self, payload: Any) -> str | None:
+        return response_error(payload)
+
+    def _auth_error(self, message: str) -> bool:
+        m = message.lower()
+        return any(x in m for x in ("token", "session", "ag8001", "ab8050", "unauthor"))
     # ---------------------------------------------------------------- auth
     def missing_credentials(self) -> List[str]:
         s = self.s
@@ -170,19 +167,15 @@ class AngelOneSession:
             try:
                 result = await loop.run_in_executor(None, self._login_sync)
             except Exception as exc:
-                self.authenticated = False
-                self.errors += 1
-                self.last_error = f"{type(exc).__name__}: {exc}"[:300]
+                self._mark_login_failed(exc)
                 raise
-            self.authenticated = True
-            self.logged_in_at = time.time()
-            self.last_error = ""
+            self._mark_logged_in()
             return result
 
     def _login_sync(self) -> Dict[str, Any]:
         try:
-            from SmartApi import SmartConnect  # type: ignore
             import pyotp  # type: ignore
+            from SmartApi import SmartConnect  # type: ignore
         except Exception as exc:
             raise RuntimeError("ANGEL_SDK_NOT_INSTALLED: pip install smartapi-python pyotp logzero websocket-client") from exc
         s = self.s
@@ -199,30 +192,6 @@ class AngelOneSession:
         self.feed_token = str(data.get("feedToken") or client.getfeedToken() or "")
         self.user_id = str(data.get("clientcode") or s.angel_client_code)
         return {"user_id": self.user_id, "name": data.get("name")}
-
-    async def ensure(self) -> None:
-        if not self.authenticated or self.client is None:
-            await self.connect()
-
-    async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
-        await self.ensure()
-        fn = getattr(self.client, method)
-        loop = asyncio.get_running_loop()
-        self.calls += 1
-        try:
-            out = await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
-        except Exception as exc:
-            self.errors += 1
-            self.last_error = f"{type(exc).__name__}: {exc}"[:300]
-            raise
-        err = response_error(out)
-        if err:
-            self.errors += 1
-            self.last_error = err
-            if "token" in err.lower() or "session" in err.lower() or "AG8001" in err or "AB8050" in err:
-                self.authenticated = False
-            raise RuntimeError(err)
-        return out
 
     # ---------------------------------------------------------------- instrument master
     async def master(self) -> List[Dict[str, Any]]:
@@ -282,7 +251,7 @@ class AngelOneSession:
         today = dt.datetime.now(IST).date()
         return [d.isoformat() for d in expiries_for(await self.master(), u.symbol, FO_EXCHANGE[u.exchange], today)]
 
-    async def option_quotes(self, u: Underlying, expiry_iso: str, strikes: Optional[Iterable[float]] = None) -> Dict[Tuple[float, str], Dict[str, Any]]:
+    async def option_quotes(self, u: Underlying, expiry_iso: str, strikes: Iterable[float] | None = None) -> Dict[Tuple[float, str], Dict[str, Any]]:
         exchange = FO_EXCHANGE[u.exchange]
         table = option_instruments(await self.master(), u.symbol, exchange, dt.date.fromisoformat(expiry_iso))
         if not table:
@@ -307,7 +276,7 @@ class AngelOneSession:
             await asyncio.sleep(0.25)  # SmartAPI market-data rate limit is per second
         return out
 
-    async def resolve_option(self, u: Underlying, expiry_iso: str, strike: float, option_type: OptionType) -> Optional[Dict[str, Any]]:
+    async def resolve_option(self, u: Underlying, expiry_iso: str, strike: float, option_type: OptionType) -> Dict[str, Any] | None:
         key = (u.symbol, expiry_iso, float(strike), option_type.value)
         if key in self._option_cache:
             return self._option_cache[key]
@@ -332,7 +301,3 @@ class AngelOneSession:
         from SmartApi.smartWebSocketV2 import SmartWebSocketV2  # type: ignore
         return SmartWebSocketV2(self.jwt_token, self.s.angel_api_key, self.s.angel_client_code, self.feed_token, max_retry_attempt=5)
 
-    def status(self) -> dict:
-        return {"provider": self.provider, "authenticated": self.authenticated, "logged_in_at": self.logged_in_at, "user_id": self.user_id, "calls": self.calls, "errors": self.errors,
-                "last_error": self.last_error, "tokens": {k: v.get("trading_symbol") or v.get("token") for k, v in self.tokens.items()}, "missing_credentials": self.missing_credentials(),
-                "needs_daily_login": False}

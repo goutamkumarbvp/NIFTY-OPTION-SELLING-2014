@@ -1,0 +1,17 @@
+[tool.ruff]
+line-length = 200
+target-version = "py311"
+exclude = ["legacy", "runtime", "node_modules"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "E741", "B008", "B904", "B905", "UP007", "UP035", "UP006", "UP042", "B007", "E731", "B023"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["terminal", "tests"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+files = ["terminal/core", "terminal/risk", "terminal/execution"]

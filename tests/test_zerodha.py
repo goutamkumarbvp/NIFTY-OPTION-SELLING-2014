@@ -1,7 +1,7 @@
 """Zerodha Kite adapter tests: pure helpers only (no SDK, no network)."""
 import datetime as dt
 
-from terminal.market.zerodha import (choose_index, choose_nearest_future, expiries_for, option_instruments, parse_instrument, parse_quote, tick_from_kite)
+from terminal.market.zerodha import choose_index, choose_nearest_future, expiries_for, option_instruments, parse_instrument, parse_quote, tick_from_kite
 
 INSTRUMENTS = [
     {"instrument_token": 256265, "tradingsymbol": "NIFTY 50", "name": "NIFTY 50", "exchange": "NSE", "segment": "INDICES", "instrument_type": "EQ", "expiry": "", "strike": 0, "lot_size": 0},

@@ -158,3 +158,13 @@ canvas.chart{width:100%;display:block}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .sp{flex:1}
 .hr{border-top:1px solid var(--line);margin:10px 0}
+
+.chat{display:flex;flex-direction:column;gap:10px;max-height:60vh;overflow:auto;padding:4px}
+.msg{max-width:85%;padding:10px 14px;border-radius:12px;font-size:12px;line-height:1.5;white-space:pre-wrap}
+.msg.user{align-self:flex-end;background:rgba(34,211,238,.15);border:1px solid rgba(34,211,238,.35)}
+.msg.assistant{align-self:flex-start;background:var(--panel2);border:1px solid var(--line2)}
+.msg small{display:block;color:var(--dim);font-family:var(--mono);margin-top:4px;font-size:10px}
+.chat-input{display:flex;gap:8px;margin-top:10px}
+.chat-input input{flex:1}
+.weights{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px}
+.weights .w{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;padding:4px 8px;border:1px solid var(--line);border-radius:6px}

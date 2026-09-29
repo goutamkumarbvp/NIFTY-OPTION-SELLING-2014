@@ -7,10 +7,9 @@ Every safety relevant flag defaults to the safest value:
 """
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,6 +27,7 @@ class Settings(BaseSettings):
     users: str = Field("", alias="TERMINAL_USERS")  # "name:password:role,name2:password:role"
     runtime_dir: Path = Field(ROOT / "runtime", alias="RUNTIME_DIR")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
+    log_format: str = Field("text", alias="LOG_FORMAT")  # text | json
 
     # --- modes / interlocks ----------------------------------------------
     terminal_mode: str = Field("MANUAL", alias="TERMINAL_MODE")  # MANUAL | AUTO
@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     terminal_end_time: str = Field("23:30", alias="TERMINAL_END_TIME")      # everything still open is squared off here
     exit_retry_seconds: float = Field(10.0, alias="EXIT_RETRY_SECONDS")     # re-send an unfilled square-off every N seconds
     exit_max_attempts: int = Field(60, alias="EXIT_MAX_ATTEMPTS")
+    reconcile_seconds: float = Field(60.0, alias="RECONCILE_SECONDS")       # broker position / margin reconciliation interval
     entry_window_start: str = Field("09:20", alias="ENTRY_WINDOW_START")
     entry_window_end: str = Field("14:30", alias="ENTRY_WINDOW_END")
     square_off_time: str = Field("15:12", alias="SQUARE_OFF_TIME")
@@ -106,10 +107,13 @@ class Settings(BaseSettings):
     llm_model: str = Field("claude-opus-5-5", alias="LLM_MODEL")
     llm_api_key: str = Field("", alias="LLM_API_KEY")
     llm_timeout_seconds: float = Field(25.0, alias="LLM_TIMEOUT_SECONDS")
+    copilot_max_turns: int = Field(6, alias="COPILOT_MAX_TURNS")  # tool-call rounds per question
+    decision_score_minutes: int = Field(30, alias="DECISION_SCORE_MINUTES")  # horizon for council evaluation
 
     # --- notifications -----------------------------------------------------
     telegram_bot_token: str = Field("", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field("", alias="TELEGRAM_CHAT_ID")
+    telegram_commands_enabled: bool = Field(True, alias="TELEGRAM_COMMANDS_ENABLED")
     smtp_host: str = Field("", alias="SMTP_HOST")
     smtp_port: int = Field(587, alias="SMTP_PORT")
     smtp_user: str = Field("", alias="SMTP_USER")

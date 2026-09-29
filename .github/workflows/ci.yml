@@ -1,0 +1,20 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      TERMINAL_START_TIME: "00:00"
+      TERMINAL_END_TIME: "23:59"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt ruff
+      - run: ruff check terminal tests scripts
+      - run: python -m pytest -q

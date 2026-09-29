@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import List, Optional
+from typing import List
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -24,12 +24,12 @@ def parse_hhmm(s: str) -> dt.time:
     return dt.time(int(h), int(m))
 
 
-def is_holiday(d: dt.date, holidays: Optional[set] = None) -> bool:
+def is_holiday(d: dt.date, holidays: set | None = None) -> bool:
     hol = holidays or DEFAULT_HOLIDAYS
     return d.weekday() >= 5 or d.isoformat() in hol
 
 
-def session_state(now: dt.datetime, open_s: str, close_s: str, holidays: Optional[set] = None) -> str:
+def session_state(now: dt.datetime, open_s: str, close_s: str, holidays: set | None = None) -> str:
     """Return PRE_OPEN | OPEN | CLOSED for the given session times."""
     if is_holiday(now.date(), holidays):
         return "CLOSED"
@@ -42,7 +42,7 @@ def session_state(now: dt.datetime, open_s: str, close_s: str, holidays: Optiona
     return "OPEN"
 
 
-def next_weekday_expiry(from_date: dt.date, weekday: int, holidays: Optional[set] = None) -> dt.date:
+def next_weekday_expiry(from_date: dt.date, weekday: int, holidays: set | None = None) -> dt.date:
     """Nearest expiry date on `weekday` (0=Mon). If the day is a holiday, expiry
     moves to the previous trading day (exchange convention)."""
     days_ahead = (weekday - from_date.weekday()) % 7
@@ -55,7 +55,7 @@ def next_weekday_expiry(from_date: dt.date, weekday: int, holidays: Optional[set
     return d
 
 
-def last_weekday_of_month(year: int, month: int, weekday: int, holidays: Optional[set] = None) -> dt.date:
+def last_weekday_of_month(year: int, month: int, weekday: int, holidays: set | None = None) -> dt.date:
     if month == 12:
         nxt = dt.date(year + 1, 1, 1)
     else:
@@ -69,7 +69,7 @@ def last_weekday_of_month(year: int, month: int, weekday: int, holidays: Optiona
     return d
 
 
-def expiry_series(from_date: dt.date, weekday: int, weekly: bool, count: int = 4, holidays: Optional[set] = None) -> List[dt.date]:
+def expiry_series(from_date: dt.date, weekday: int, weekly: bool, count: int = 4, holidays: set | None = None) -> List[dt.date]:
     out: List[dt.date] = []
     if weekly:
         d = next_weekday_expiry(from_date, weekday, holidays)

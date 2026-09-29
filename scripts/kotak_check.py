@@ -64,6 +64,7 @@ async def main() -> int:
         return 0
     print("→ streaming ticks for 15 s …")
     from neo_api_client.websocket.feed import WsToken  # type: ignore
+
     from terminal.market.kotak import tick_from_message
 
     count, t_end = 0, time.time() + 15

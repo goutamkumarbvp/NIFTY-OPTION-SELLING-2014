@@ -6,7 +6,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 class AuditLog:
@@ -42,7 +42,7 @@ class AuditLog:
             self._prev, self._count = prev, count
             return True
 
-    def record(self, event: str, detail: Optional[Dict[str, Any]] = None, actor: str = "system") -> Dict[str, Any]:
+    def record(self, event: str, detail: Dict[str, Any] | None = None, actor: str = "system") -> Dict[str, Any]:
         with self._lock:
             row = {"ts": time.time(), "event": event, "actor": actor, "detail": detail or {}, "prev_hash": self._prev}
             row["hash"] = self._hash(row)

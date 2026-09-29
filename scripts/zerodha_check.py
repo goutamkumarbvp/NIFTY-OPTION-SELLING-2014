@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -49,7 +48,6 @@ async def main() -> int:
     ticker = session.ticker()
     tokens = [int(v["token"]) for v in found.values()]
     counter = {"n": 0}
-    done = threading.Event()
 
     def on_connect(ws, resp):
         ws.subscribe(tokens)

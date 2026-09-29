@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from terminal.core.models import Assessment, OptionChain, RiskSnapshot, StrategyRun, TerminalMode
 
@@ -15,9 +15,9 @@ class MarketContext:
     underlying: str
     exchange: str
     spot: float
-    vix: Optional[float]
+    vix: float | None
     vix_rank: Dict[str, Any]
-    chain: Optional[OptionChain]
+    chain: OptionChain | None
     indicators: Dict[str, Any]
     pcr_history: List[dict]
     risk: RiskSnapshot
@@ -28,7 +28,7 @@ class MarketContext:
     can_enter_reason: str
     is_expiry_day: bool
     days_to_expiry: float
-    sigma_move_5m: Optional[float]
+    sigma_move_5m: float | None
     feed_fresh: bool
     memory: Dict[str, Any] = field(default_factory=dict)
     events: List[dict] = field(default_factory=list)
@@ -43,7 +43,7 @@ class Agent(ABC):
 
     def __init__(self, terminal) -> None:
         self.t = terminal
-        self.last: Optional[Assessment] = None
+        self.last: Assessment | None = None
         self.runs = 0
         self.failures = 0
 

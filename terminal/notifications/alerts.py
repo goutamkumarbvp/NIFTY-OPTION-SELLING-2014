@@ -6,7 +6,7 @@ import logging
 import smtplib
 import time
 from email.message import EmailMessage
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import httpx
 
@@ -23,7 +23,7 @@ class AlertEngine:
         self.delivery_stats = {"telegram_sent": 0, "telegram_failed": 0, "email_sent": 0, "email_failed": 0}
         self.channels = {"telegram": bool(terminal.settings.telegram_bot_token and terminal.settings.telegram_chat_id), "email": bool(terminal.settings.smtp_host and terminal.settings.alert_email_to)}
 
-    async def emit(self, level: str, category: str, title: str, body: str = "", market: str = "", dedupe_seconds: float = 60.0) -> Optional[Alert]:
+    async def emit(self, level: str, category: str, title: str, body: str = "", market: str = "", dedupe_seconds: float = 60.0) -> Alert | None:
         key = f"{level}:{category}:{title}"
         now = time.time()
         if now - self._dedupe.get(key, 0) < dedupe_seconds:

@@ -3,9 +3,9 @@ stop-loss / target / trailing / time exits and adjustments."""
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from terminal.core.models import Exchange, Leg, OptionType, Order, OrderSource, OrderStatus, Side, StrategyRun, TerminalMode, TradePlan
+from terminal.core.models import Leg, OrderSource, OrderStatus, Side, StrategyRun, TerminalMode, TradePlan
 from terminal.strategy.library import SPECS, build_legs, estimate_margin, net_credit_per_lot, payoff_profile
 
 
@@ -25,8 +25,8 @@ class StrategyEngine:
                         self.enabled[k] = bool(v["enabled"])
 
     # ------------------------------------------------------------ plan creation
-    def make_plan(self, key: str, underlying: str, lots: int, expiry: Optional[str] = None, params: Optional[dict] = None,
-                  rationale: Optional[List[str]] = None, confidence: float = 0.0, consensus: float = 0.0, votes: Optional[dict] = None,
+    def make_plan(self, key: str, underlying: str, lots: int, expiry: str | None = None, params: dict | None = None,
+                  rationale: List[str] | None = None, confidence: float = 0.0, consensus: float = 0.0, votes: dict | None = None,
                   source: OrderSource = OrderSource.AUTO) -> TradePlan:
         u = self.t.universe.get(underlying)
         chain = self.t.chain_for(underlying, expiry)
@@ -43,7 +43,7 @@ class StrategyEngine:
         return plan
 
     # ------------------------------------------------------------ deployment
-    async def deploy(self, plan: TradePlan, actor: str, source: Optional[OrderSource] = None) -> StrategyRun:
+    async def deploy(self, plan: TradePlan, actor: str, source: OrderSource | None = None) -> StrategyRun:
         src = source or plan.source
         check = self.t.risk.check_plan(plan)
         if not check["allowed"]:
@@ -224,6 +224,30 @@ class StrategyEngine:
         self.t.audit.record("STRATEGY_ADJUSTED", {"run": run.id, "note": note}, actor)
         await self.t.alerts.emit("INFO", "adjustment", f"Adjusted {run.underlying} {SPECS[run.strategy].name}", note, market=run.exchange.value)
 
+    # ------------------------------------------------------------ recovery
+    def restore(self) -> int:
+        """Reload ACTIVE / EXITING runs after a restart; EXITING runs get their exit intents rebuilt."""
+        n = 0
+        for row in self.t.db.runs(limit=500):
+            try:
+                run = StrategyRun(**row)
+            except Exception:
+                continue
+            if run.status in ("ACTIVE", "EXITING") and run.id not in self.runs:
+                self.runs[run.id] = run
+                n += 1
+        return n
+
+    async def resume_exits(self) -> int:
+        n = 0
+        for run in list(self.runs.values()):
+            if run.status == "EXITING":
+                for leg in run.legs:
+                    if await self.t.exit_guard.request(leg.symbol, run.exit_reason or "RESUMED_EXIT", OrderSource.STRATEGY, run_id=run.id, actor="recovery"):
+                        n += 1
+        await self.check_exiting()
+        return n
+
     # ------------------------------------------------------------ config
     def update_config(self, key: str, patch: dict, actor: str) -> dict:
         if key not in self.config:
@@ -244,5 +268,5 @@ class StrategyEngine:
             "plans": [p.model_dump(mode="json") for p in sorted(self.plans.values(), key=lambda p: p.created_at, reverse=True)[:50]],
         }
 
-    def active_runs(self, underlying: Optional[str] = None) -> List[StrategyRun]:
+    def active_runs(self, underlying: str | None = None) -> List[StrategyRun]:
         return [r for r in self.runs.values() if r.status == "ACTIVE" and (underlying is None or r.underlying == underlying)]

@@ -3,8 +3,7 @@ import datetime as dt
 from types import SimpleNamespace
 
 from terminal.core.models import Tick
-from terminal.market.kotak import (choose_index_token, choose_nearest_future, parse_chain_rows, parse_expiry, parse_scrip_row, response_error, rows_of,
-                                   tick_from_message)
+from terminal.market.kotak import choose_index_token, choose_nearest_future, parse_chain_rows, parse_expiry, parse_scrip_row, response_error, rows_of, tick_from_message
 
 
 def test_parse_expiry_variants():

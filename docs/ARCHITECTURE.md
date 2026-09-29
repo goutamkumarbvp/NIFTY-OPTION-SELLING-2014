@@ -27,6 +27,17 @@
 └────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Live path additions (V30.1)
+
+```
+broker ──fetch_order──▶ OrderReconciler ──apply_broker_update──▶ OrderManager ─▶ Positions
+broker ──positions/margins──▶ PositionReconciler ──▶ alerts / adopt / broker margin → RiskManager
+feed WebSocket ──option ticks──▶ Terminal._on_option_quote ──▶ OptionChainBuilder.apply_broker_quotes
+ExitGuard.tick (1 s) ─▶ retry unfilled square-offs; StrategyEngine.check_exiting closes runs when flat
+Council ─▶ CouncilEvaluator.record ─▶ decision_journal ─(horizon)─▶ score_pending ─▶ EntryQualityModel.train ─▶ LearnedModel agent
+Copilot (Claude tool-use) ─▶ read tools + propose_plan ─▶ Approvals (human)
+```
+
 ## Packages
 
 | Package | Responsibility |
@@ -42,7 +53,11 @@
 | `terminal/notifications` | Alert engine and channels |
 | `terminal/monitoring` | Health monitor |
 | `terminal/storage` | SQLite repository |
-| `terminal/api` | FastAPI app, auth |
+| `terminal/api` | FastAPI factory, auth, per-domain routers (`routes/`) |
+| `terminal/execution/exit_guard.py`, `reconcile.py` | Square-off authority with retry/dedupe; broker order/position/margin reconciliation |
+| `terminal/agents/copilot.py`, `journal.py` | Claude tool-use copilot; daily journal and similar-day retrieval |
+| `terminal/analytics/evaluation.py`, `models.py` | Council evaluation harness; online entry-quality model |
+| `terminal/notifications/telegram.py`, `terminal/monitoring/metrics.py` | Telegram command bot; Prometheus metrics |
 | `terminal/ui` | Static dashboard (HTML/CSS/ES modules + canvas charts) |
 
 ## Order path (identical in both modes)

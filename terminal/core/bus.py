@@ -5,7 +5,7 @@ import asyncio
 import collections
 import logging
 import time
-from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Deque, Dict, List
 
 log = logging.getLogger("terminal.bus")
 

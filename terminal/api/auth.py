@@ -12,7 +12,7 @@ from __future__ import annotations
 import hmac
 import secrets
 import time
-from typing import Dict, Optional
+from typing import Dict
 
 from fastapi import Depends, HTTPException, Request, WebSocket
 
@@ -26,7 +26,7 @@ class AuthManager:
         self.users = {u["username"]: u for u in settings.user_table()}
         self.open_access = settings.is_loopback and not settings.api_auth_token and not self.users
 
-    def login(self, username: str, password: str) -> Optional[dict]:
+    def login(self, username: str, password: str) -> dict | None:
         u = self.users.get(username)
         if u is None or not hmac.compare_digest(u["password"], password):
             return None
@@ -37,7 +37,7 @@ class AuthManager:
     def logout(self, token: str) -> None:
         self.sessions.pop(token, None)
 
-    def identify(self, token: Optional[str]) -> Optional[dict]:
+    def identify(self, token: str | None) -> dict | None:
         if token:
             if self.s.api_auth_token and hmac.compare_digest(token, self.s.api_auth_token):
                 return {"username": "api-token", "role": "admin"}
@@ -55,7 +55,7 @@ class AuthManager:
         return {"open_access": self.open_access, "users_configured": len(self.users), "token_configured": bool(self.s.api_auth_token)}
 
 
-def _extract(request: Request) -> Optional[str]:
+def _extract(request: Request) -> str | None:
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth[7:].strip()
@@ -78,7 +78,7 @@ def require(role: str):
     return _dep
 
 
-def ws_user(websocket: WebSocket) -> Optional[dict]:
+def ws_user(websocket: WebSocket) -> dict | None:
     auth: AuthManager = websocket.app.state.auth
     token = websocket.query_params.get("token")
     return auth.identify(token)

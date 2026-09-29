@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from terminal.core.models import Exchange, Order, OrderSource, OrderStatus, OrderType, OptionType, Side, TerminalMode
+from terminal.core.models import Order, OrderSource, OrderStatus, OrderType, Side, TerminalMode
 
 
 class OrderManager:
@@ -21,8 +21,8 @@ class OrderManager:
         if d != self._day:
             self._day, self.trades_today = d, 0
 
-    def build(self, symbol: str, side: Side, lots: int, source: OrderSource, order_type: OrderType = OrderType.MARKET, limit_price: Optional[float] = None,
-              run_id: Optional[str] = None, tag: str = "", reason: str = "") -> Order:
+    def build(self, symbol: str, side: Side, lots: int, source: OrderSource, order_type: OrderType = OrderType.MARKET, limit_price: float | None = None,
+              run_id: str | None = None, tag: str = "", reason: str = "") -> Order:
         q = self.t.quote(symbol)
         if q is None:
             raise ValueError(f"UNKNOWN_SYMBOL:{symbol}")
@@ -139,6 +139,66 @@ class OrderManager:
             self.t.log("WARNING", "orders", f"{order.status.value} {order.side.value} {order.lots}L {order.symbol}: {order.message}")
             await self.t.bus.publish("order.updated", order)
         return order
+
+    async def apply_broker_update(self, order: Order, upd: Dict[str, object]) -> bool:
+        """Apply a broker-reported state to a working order. Returns True when something changed."""
+        status = str(upd.get("status") or "").upper()
+        filled_qty = int(upd.get("filled_qty") or 0)
+        avg_price = float(upd.get("avg_price") or 0.0)
+        message = str(upd.get("message") or "")
+        changed = False
+        new_units = filled_qty - order.filled_qty
+        if new_units > 0 and avg_price > 0:
+            # incremental fill: book only the new units at the broker's average price
+            from terminal.execution.brokers.paper import option_charges
+            charges = option_charges(order.exchange, order.side, avg_price * new_units)
+            order.filled_price = avg_price
+            order.charges = round(order.charges + charges, 2)
+            prev_units = order.filled_qty
+            order.filled_qty = filled_qty
+            if prev_units == 0:
+                self.trades_today += 1
+            pos = self.t.positions.apply_fill(order, qty_units=new_units, price=avg_price, charges=charges)
+            self.t.db.add_fill(order.id, order.symbol, order.side.value, new_units, avg_price, charges, order.strategy_run_id, order.source.value)
+            self.t.audit.record("ORDER_PARTIAL_FILL" if filled_qty < order.quantity else "ORDER_FILLED", order.model_dump(mode="json"), "reconciler")
+            self.t.log("INFO", "orders", f"BROKER FILL {order.side.value} {new_units}u {order.symbol} @ {avg_price} ({order.filled_qty}/{order.quantity})")
+            await self.t.bus.publish("order.filled", order)
+            await self.t.bus.publish("position.updated", pos)
+            changed = True
+        if filled_qty >= order.quantity and order.quantity > 0:
+            if order.status != OrderStatus.FILLED:
+                order.status = OrderStatus.FILLED
+                order.message = message or "FILLED_AT_BROKER"
+                changed = True
+        elif status in ("CANCELLED", "CANCELED"):
+            if order.status != OrderStatus.CANCELLED:
+                order.status = OrderStatus.CANCELLED
+                order.message = message or "CANCELLED_AT_BROKER"
+                changed = True
+        elif status == "REJECTED":
+            if order.status != OrderStatus.REJECTED:
+                order.status = OrderStatus.REJECTED
+                order.message = message or "REJECTED_AT_BROKER"
+                self.t.log("WARNING", "orders", f"{order.id} rejected at broker: {order.message}")
+                changed = True
+        if changed:
+            order.updated_at = time.time()
+            self._persist(order)
+            await self.t.bus.publish("order.updated", order)
+        return changed
+
+    def restore(self) -> int:
+        """Reload today's working orders after a restart so the reconciler can finish them."""
+        day_start = time.mktime(time.strptime(time.strftime("%Y-%m-%d"), "%Y-%m-%d"))
+        n = 0
+        for row in self.t.db.open_orders(day_start):
+            try:
+                o = Order(**row)
+            except Exception:
+                continue
+            self.orders[o.id] = o
+            n += 1
+        return n
 
     async def cancel(self, order_id: str, actor: str) -> Order:
         order = self.orders[order_id]
