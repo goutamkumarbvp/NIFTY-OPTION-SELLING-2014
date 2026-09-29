@@ -40,3 +40,11 @@ Tests   : python -m pytest -q                              Docs: README.md, docs
 Docker  : docker compose up --build                        systemd: deploy/terminal.service
 
 Never share your .env or paste credentials anywhere. Test in PAPER mode first.
+
+GUARDIAN (self-healing)
+  The Guardian agent scans the terminal every 5 s: loop heartbeats, feed, broker
+  session, book reconciliation, stuck exits, lag, error bursts, host resources.
+  When it finds a problem it opens an incident with a diagnosis and a remedy and
+  waits for YOUR permission (Approvals panel, or Telegram: /heal approve <id>).
+  Set GUARDIAN_AUTO_APPLY=low to let it apply low-risk remedies (reconnect,
+  restart loop, pause entries) on its own. Flatten always asks.

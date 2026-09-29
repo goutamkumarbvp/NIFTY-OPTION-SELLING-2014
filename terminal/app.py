@@ -8,6 +8,7 @@ from typing import Dict, List, Set
 
 from terminal import PRODUCT, __version__
 from terminal.agents.copilot import Copilot
+from terminal.agents.guardian import GuardianAgent
 from terminal.agents.journal import Journal
 from terminal.agents.orchestrator import Council
 from terminal.analytics.evaluation import CouncilEvaluator
@@ -106,6 +107,9 @@ class Terminal:
         self.metrics = Metrics(self)
         self.telegram = TelegramCommands(self)
         self.health = HealthMonitor(self)
+        self.guardian = GuardianAgent(self)
+        self.heartbeats: Dict[str, float] = {}
+        self._loop_tasks: Dict[str, asyncio.Task] = {}
         self._tasks: List[asyncio.Task] = []
         self._stop = asyncio.Event()
         self._chain_refresh_seconds = 2.0
@@ -149,21 +153,54 @@ class Terminal:
             self.log("CRITICAL", "feed", f"feed start failed: {exc}")
             await self.alerts.emit("CRITICAL", "feed", "Market feed failed to start", str(exc))
         self._stop = asyncio.Event()
-        self._tasks = [asyncio.create_task(self._chain_loop(), name="chain-loop"), asyncio.create_task(self._risk_loop(), name="risk-loop"),
-                       asyncio.create_task(self._council_loop(), name="council-loop"), asyncio.create_task(self._broadcast_loop(), name="broadcast-loop"),
-                       asyncio.create_task(self._feed_supervisor(), name="feed-supervisor")]
-        if self.live is not None:
-            self._tasks.append(asyncio.create_task(self._live_chain_loop(), name="live-chain-poller"))
-            self._tasks.append(asyncio.create_task(self._stream_loop(), name="option-stream"))
-        if getattr(self.broker, "live", False):
-            self._tasks.append(asyncio.create_task(self._reconcile_loop(), name="reconcile-loop"))
-        self._tasks.append(asyncio.create_task(self._learning_loop(), name="learning-loop"))
+        self.heartbeats = {}
+        self._loop_tasks = {name: asyncio.create_task(fn(), name=name) for name, (fn, _) in self.loop_specs().items()}
+        self._tasks = list(self._loop_tasks.values())
         if self.telegram.enabled:
             self._tasks.append(asyncio.create_task(self.telegram.run(), name="telegram-commands"))
         if self.recovery.get("runs_exiting"):
             asyncio.create_task(self.strategies.resume_exits())
         self.engine_running = True
         self.log("INFO", "terminal", f"{PRODUCT} v{__version__} started: mode={self.mode.value} env={self.env.value} feed={self.feed.name} broker={self.broker.name}")
+
+    def loop_specs(self) -> Dict[str, tuple]:
+        """Supervised loops: name -> (coroutine factory, expected heartbeat period in seconds). The Guardian
+        watches each heartbeat and can restart a loop (with the operator's permission) if it stalls or crashes."""
+        s = self.settings
+        specs: Dict[str, tuple] = {"chain-loop": (self._chain_loop, 2.0), "risk-loop": (self._risk_loop, 1.0), "council-loop": (self._council_loop, float(s.agent_cycle_seconds)),
+                                   "broadcast-loop": (self._broadcast_loop, 1.0), "feed-supervisor": (self._feed_supervisor, 5.0), "learning-loop": (self._learning_loop, 30.0)}
+        if self.live is not None:
+            specs["live-chain-poller"] = (self._live_chain_loop, float(s.live_chain_poll_seconds))
+            specs["option-stream"] = (self._stream_loop, 10.0)
+        if getattr(self.broker, "live", False):
+            specs["reconcile-loop"] = (self._reconcile_loop, 2.0)
+        if self.guardian.enabled:
+            specs["guardian-loop"] = (self.guardian.run, float(s.guardian_interval_seconds))
+        return specs
+
+    def loop_task(self, name: str) -> asyncio.Task | None:
+        return self._loop_tasks.get(name)
+
+    def beat(self, name: str) -> None:
+        self.heartbeats[name] = time.time()
+
+    async def restart_loop(self, name: str) -> None:
+        spec = self.loop_specs().get(name)
+        if spec is None:
+            raise KeyError(f"UNKNOWN_LOOP:{name}")
+        old = self._loop_tasks.get(name)
+        if old is not None and not old.done():
+            old.cancel()
+            try:
+                await old
+            except (asyncio.CancelledError, Exception):
+                pass
+        task = asyncio.create_task(spec[0](), name=name)
+        self._loop_tasks[name] = task
+        self._tasks = [t for t in self._tasks if t is not old] + [task]
+        self.beat(name)
+        self.audit.record("LOOP_RESTARTED", {"loop": name}, "guardian")
+        self.log("WARNING", "terminal", f"loop '{name}' restarted")
 
     async def stop(self) -> None:
         self._stop.set()
@@ -228,6 +265,7 @@ class Terminal:
         """Keep held and near-ATM option contracts subscribed on the live WebSocket."""
         await asyncio.sleep(8.0)
         while not self._stop.is_set():
+            self.beat("option-stream")
             try:
                 if self.live.authenticated:
                     wanted: Dict[str, tuple] = {}
@@ -260,6 +298,7 @@ class Terminal:
     async def _learning_loop(self) -> None:
         """Score council decisions after their horizon and train the entry-quality model."""
         while not self._stop.is_set():
+            self.beat("learning-loop")
             await asyncio.sleep(30.0)
             try:
                 scored = self.evaluator.score_pending()
@@ -273,6 +312,7 @@ class Terminal:
         await asyncio.sleep(3.0)
         n = 0
         while not self._stop.is_set():
+            self.beat("reconcile-loop")
             try:
                 await self.order_reconciler.tick()
                 if n % max(1, int(self.settings.reconcile_seconds / 2)) == 0:
@@ -333,6 +373,7 @@ class Terminal:
     async def _chain_loop(self) -> None:
         while not self._stop.is_set():
             t0 = time.perf_counter()
+            self.beat("chain-loop")
             try:
                 vix = self.processor.last_price(VIX_SYMBOL) or 13.0
                 for u in self.universe.all():
@@ -373,6 +414,7 @@ class Terminal:
         """Poll real option quotes from the live broker and overlay them on the model chain."""
         await asyncio.sleep(5.0)
         while not self._stop.is_set():
+            self.beat("live-chain-poller")
             if self.live.missing_credentials() or not self.live.authenticated:
                 await asyncio.sleep(30.0)
                 continue
@@ -400,6 +442,7 @@ class Terminal:
 
     async def _risk_loop(self) -> None:
         while not self._stop.is_set():
+            self.beat("risk-loop")
             try:
                 await self.risk.evaluate()
                 await self.exit_guard.tick()
@@ -430,6 +473,7 @@ class Terminal:
     async def _council_loop(self) -> None:
         await asyncio.sleep(3.0)
         while not self._stop.is_set():
+            self.beat("council-loop")
             try:
                 if not self.paused and self.chains and self.scheduler.in_operating_window():
                     await self.council.run_cycle()
@@ -440,6 +484,7 @@ class Terminal:
     async def _feed_supervisor(self) -> None:
         failures = 0
         while not self._stop.is_set():
+            self.beat("feed-supervisor")
             await asyncio.sleep(5.0)
             try:
                 if self.feed.last_tick_ts and not self.feed.is_fresh(self.settings.feed_stale_seconds * 3):
@@ -457,6 +502,7 @@ class Terminal:
     async def _broadcast_loop(self) -> None:
         import json
         while not self._stop.is_set():
+            self.beat("broadcast-loop")
             await asyncio.sleep(1.0)
             if not self.ws_clients:
                 continue
@@ -504,6 +550,7 @@ class Terminal:
             "alerts": [a.model_dump(mode="json") for a in self.alerts.recent[-15:][::-1]], "scheduler": self.scheduler.describe(), "exits": self.exit_guard.describe(),
             "reconcile": {"orders": self.order_reconciler.describe(), "positions": self.position_reconciler.describe(), "stream": self.stream_stats, "recovery": self.recovery},
             "copilot": self.copilot.status(), "model": self.entry_model.describe(), "telegram": self.telegram.status(), "pnl": self.pnl_summary(),
+            "guardian": self.guardian.describe(20),
         }
 
 

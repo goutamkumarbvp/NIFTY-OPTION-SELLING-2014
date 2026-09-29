@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     decision_score_minutes: int = Field(30, alias="DECISION_SCORE_MINUTES")  # horizon for council evaluation
 
     # --- notifications -----------------------------------------------------
+    # --- guardian (self-monitoring / self-healing; asks for permission by default) ---
+    guardian_enabled: bool = Field(True, alias="GUARDIAN_ENABLED")
+    guardian_interval_seconds: float = Field(5.0, alias="GUARDIAN_INTERVAL_SECONDS")
+    guardian_auto_apply: str = Field("none", alias="GUARDIAN_AUTO_APPLY")  # none | low | medium | all  (flatten always needs approval)
+    guardian_approval_ttl_seconds: float = Field(900.0, alias="GUARDIAN_APPROVAL_TTL_SECONDS")
+    guardian_llm_diagnosis: bool = Field(True, alias="GUARDIAN_LLM_DIAGNOSIS")  # Claude root-cause note when LLM_ENABLED
     telegram_bot_token: str = Field("", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field("", alias="TELEGRAM_CHAT_ID")
     telegram_commands_enabled: bool = Field(True, alias="TELEGRAM_COMMANDS_ENABLED")
@@ -133,6 +139,14 @@ class Settings(BaseSettings):
         v = v.strip().lower()
         if v not in {"kotak", "zerodha", "angel"}:
             raise ValueError("DATA_SOURCE must be kotak, zerodha or angel (the terminal is live-data only)")
+        return v
+
+    @field_validator("guardian_auto_apply")
+    @classmethod
+    def _guardian_policy(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in {"none", "low", "medium", "all"}:
+            raise ValueError("GUARDIAN_AUTO_APPLY must be none, low, medium or all")
         return v
 
     @field_validator("trading_env")

@@ -181,6 +181,14 @@ class Database:
         if int(time.time()) % 97 == 0:
             self._exec("DELETE FROM system_log WHERE id < (SELECT MAX(id) FROM system_log) - 20000")
 
+    def prune_logs(self, keep: int = 20000) -> int:
+        """Delete the oldest system_log rows beyond `keep`; trades, orders and audit are never pruned."""
+        row = self._rows("SELECT id FROM system_log ORDER BY id DESC LIMIT 1 OFFSET ?", (keep,))
+        if not row:
+            return 0
+        cur = self._exec("DELETE FROM system_log WHERE id <= ?", (row[0]["id"],))
+        return cur.rowcount if cur.rowcount is not None else 0
+
     def logs(self, limit: int = 300, level: str | None = None, source: str | None = None) -> List[Dict[str, Any]]:
         sql, params = "SELECT * FROM system_log", []
         clauses = []
