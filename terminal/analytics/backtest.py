@@ -13,6 +13,7 @@ import math
 import random
 from typing import Dict, List, Optional
 
+from terminal.core.clock import IST
 from terminal.core.models import Side, Underlying
 from terminal.market.chain import OptionChainBuilder
 from terminal.market.pricing import bs_price
@@ -20,7 +21,11 @@ from terminal.strategy.library import SPECS, build_legs, net_credit_per_lot
 
 
 def run_backtest(u: Underlying, strategy: str, days: int = 60, lots: int = 1, params: Optional[dict] = None, seed: int = 42, vix: float = 13.5,
-                 daily_vol_override: Optional[float] = None, price_path: Optional[List[float]] = None) -> Dict:
+                 daily_vol_override: Optional[float] = None, price_path: Optional[List[float]] = None, iv_premium: float = 1.10) -> Dict:
+    """``iv_premium`` is the implied-over-realised volatility ratio of the synthetic
+    market (index options historically trade ~5-15% above realised vol). Each
+    simulated day consumes one calendar day of time value; ~70% of the daily
+    variance is realised intraday and the rest as the overnight gap."""
     if strategy not in SPECS:
         raise ValueError("UNKNOWN_STRATEGY")
     p = {**SPECS[strategy].params, **(params or {})}
@@ -28,6 +33,7 @@ def run_backtest(u: Underlying, strategy: str, days: int = 60, lots: int = 1, pa
     builder = OptionChainBuilder(seed=seed)
     spot = u.base_spot
     daily_vol = (daily_vol_override or u.base_vol) / math.sqrt(252)
+    implied_vol_pct = (daily_vol_override or u.base_vol) * iv_premium * 100.0
     results: List[dict] = []
     equity, cum, peak, max_dd = [], 0.0, 0.0, 0.0
     start = dt.datetime.now().replace(hour=9, minute=20, second=0, microsecond=0) - dt.timedelta(days=days)
@@ -38,7 +44,9 @@ def run_backtest(u: Underlying, strategy: str, days: int = 60, lots: int = 1, pa
         # expiry chosen so days_to_expiry is 1..7 like a weekly seller would see
         dte = rng.choice([1, 2, 3, 4, 5])
         expiry = (day + dt.timedelta(days=dte)).date().isoformat()
-        chain = builder.build(u, spot, vix * rng.uniform(0.85, 1.2), expiry=expiry, now=day.replace(tzinfo=None).astimezone() if day.tzinfo else day.astimezone())
+        # implied vol for the day: realised vol × premium, with mild day-to-day noise
+        day_vix = implied_vol_pct * rng.uniform(0.92, 1.08) * (0.13 / max(u.base_vol, 1e-6)) if u.exchange.value != "MCX" else vix
+        chain = builder.build(u, spot, day_vix, expiry=expiry, now=day.astimezone(IST))
         legs = build_legs(strategy, chain, lots, p)
         credit = net_credit_per_lot(legs, u.lot_size) * lots
         sl_amt = abs(credit) * p.get("stop_loss_pct", 35) / 100
@@ -47,11 +55,11 @@ def run_backtest(u: Underlying, strategy: str, days: int = 60, lots: int = 1, pa
         # intraday path: 75 five-minute steps
         s = spot
         pnl, exit_reason = 0.0, "SQUARE_OFF"
-        step_vol = daily_vol / math.sqrt(75)
+        step_vol = daily_vol * math.sqrt(0.7) / math.sqrt(75)  # ~70% of daily variance intraday
         drift = rng.choice([-1, 0, 0, 1]) * daily_vol * 0.3
         for i in range(1, 76):
             s *= math.exp(rng.gauss(drift / 75, step_vol))
-            t = max(t0 - (i / 75) * (6.25 / 24) / 365, 1e-5)
+            t = max(t0 - (i / 75) / 365.0, 1e-5)  # one calendar day of decay per session
             mtm = 0.0
             for l in legs:
                 iv = (chain.find(l.strike, l.option_type).iv if chain.find(l.strike, l.option_type) else chain.iv_atm) / 100
@@ -72,12 +80,12 @@ def run_backtest(u: Underlying, strategy: str, days: int = 60, lots: int = 1, pa
         max_dd = min(max_dd, cum - peak)
         results.append({"day": day.date().isoformat(), "spot_open": round(spot, 1), "spot_close": round(s, 1), "credit": round(credit, 0), "pnl": round(pnl, 0), "exit": exit_reason, "dte": dte})
         equity.append(round(cum, 0))
-        spot = s * math.exp(rng.gauss(0, daily_vol * 0.35))  # overnight gap
+        spot = s * math.exp(rng.gauss(0, daily_vol * math.sqrt(0.3)))  # overnight gap (~30% of daily variance)
     pnls = [r["pnl"] for r in results]
     wins = [x for x in pnls if x > 0]
     losses = [x for x in pnls if x <= 0]
     return {
-        "strategy": strategy, "underlying": u.symbol, "days": len(results), "lots": lots, "params": p,
+        "strategy": strategy, "underlying": u.symbol, "days": len(results), "lots": lots, "params": p, "iv_premium": iv_premium,
         "net_pnl": round(sum(pnls), 0), "win_rate": round(len(wins) / len(pnls), 3) if pnls else None,
         "avg_win": round(sum(wins) / len(wins), 0) if wins else None, "avg_loss": round(sum(losses) / len(losses), 0) if losses else None,
         "profit_factor": round(sum(wins) / -sum(losses), 2) if losses and sum(losses) < 0 else None, "max_drawdown": round(max_dd, 0),

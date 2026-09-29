@@ -339,7 +339,7 @@ class Terminal:
             "live_session": {**self.live.status(), "chain": self.live_chain_stats} if self.live else None, "vix": {"ltp": vix.ltp, "change_pct": vix.change_pct} if vix else None,
             "market": self.market_overview(), "risk": self.risk.describe(), "positions": self.positions.snapshot(), "orders": self.orders.recent(60),
             "pending_orders": [o.model_dump(mode="json") for o in self.orders.pending_approval()], "runs": [r.model_dump(mode="json") for r in self.strategies.runs.values() if r.status != "CLOSED"],
-            "pending_plans": [p.model_dump(mode="json") for p in self.council.pending_plans()], "council": {"cycle": self.council.cycle, "busy": self.council.busy, "focus": self.council.focus,
+            "pending_plans": [p.model_dump(mode="json") for p in self.council.pending_plans()], "council": {"cycle": self.council.cycle, "busy": self.council.busy, "focus": self.council.focus, "auto_trades_today": self.council.auto_trades_today,
             "last": [d.model_dump(mode="json") | {"assessments": [{k: v for k, v in a.model_dump(mode="json").items() if k != "data"} for a in d.assessments]} for d in self.council.decisions[-4:][::-1]],
             "agents": [a.status() for a in self.council.agents], "briefs": self.council.last_brief, "llm": self.council.llm.status()},
             "alerts": [a.model_dump(mode="json") for a in self.alerts.recent[-15:][::-1]], "scheduler": self.scheduler.describe(), "pnl": {"daily": self.positions.daily_pnl(), "realized": round(self.positions.realized_today, 2), "unrealized": self.positions.unrealized(), "charges": round(self.positions.charges_today, 2)},
