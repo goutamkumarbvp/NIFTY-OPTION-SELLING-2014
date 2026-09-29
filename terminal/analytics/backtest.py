@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import random
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from terminal.core.clock import IST
 from terminal.core.models import Side, Underlying
@@ -20,8 +20,8 @@ from terminal.market.pricing import bs_price
 from terminal.strategy.library import SPECS, build_legs, net_credit_per_lot
 
 
-def run_backtest(u: Underlying, strategy: str, days: int = 60, lots: int = 1, params: Optional[dict] = None, seed: int = 42, vix: float = 13.5,
-                 daily_vol_override: Optional[float] = None, price_path: Optional[List[float]] = None, iv_premium: float = 1.10) -> Dict:
+def run_backtest(u: Underlying, strategy: str, days: int = 60, lots: int = 1, params: dict | None = None, seed: int = 42, vix: float = 13.5,
+                 daily_vol_override: float | None = None, price_path: List[float] | None = None, iv_premium: float = 1.10) -> Dict:
     """``iv_premium`` is the implied-over-realised volatility ratio of the synthetic
     market (index options historically trade ~5-15% above realised vol). Each
     simulated day consumes one calendar day of time value; ~70% of the daily

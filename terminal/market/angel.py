@@ -18,7 +18,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 import httpx
 
@@ -47,7 +47,7 @@ def _f(v: Any, default: float = 0.0) -> float:
         return default
 
 
-def parse_expiry(value: Any) -> Optional[dt.date]:
+def parse_expiry(value: Any) -> dt.date | None:
     if value in (None, ""):
         return None
     s = str(value).strip()
@@ -75,7 +75,7 @@ def option_type_of(p: Dict[str, Any]) -> str:
     return ""
 
 
-def choose_index(rows: Iterable[Dict[str, Any]], names: List[str], exchange: str) -> Optional[Dict[str, Any]]:
+def choose_index(rows: Iterable[Dict[str, Any]], names: List[str], exchange: str) -> Dict[str, Any] | None:
     wanted = [n.upper() for n in names]
     parsed = [parse_master_row(r) for r in rows if str(r.get("exch_seg", "")).upper() == exchange]
     for w in wanted:
@@ -85,7 +85,7 @@ def choose_index(rows: Iterable[Dict[str, Any]], names: List[str], exchange: str
     return None
 
 
-def choose_nearest_future(rows: Iterable[Dict[str, Any]], name: str, exchange: str, today: dt.date) -> Optional[Dict[str, Any]]:
+def choose_nearest_future(rows: Iterable[Dict[str, Any]], name: str, exchange: str, today: dt.date) -> Dict[str, Any] | None:
     futs = [p for p in (parse_master_row(r) for r in rows) if p["exchange"] == exchange and p["name"].upper() == name.upper() and p["instrument_type"].startswith("FUT") and p["expiry"] and p["expiry"] >= today]
     return min(futs, key=lambda p: p["expiry"]) if futs else None
 
@@ -116,7 +116,7 @@ def parse_market_quote(q: Dict[str, Any]) -> Dict[str, Any]:
             "prev_close": _f(q.get("close")), "open": _f(q.get("open")), "high": _f(q.get("high")), "low": _f(q.get("low"))}
 
 
-def tick_from_smart(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def tick_from_smart(msg: Dict[str, Any]) -> Dict[str, Any] | None:
     """SmartWebSocketV2 parsed packet -> plain fields (prices are in paise)."""
     ltp = _f(msg.get("last_traded_price")) / 100.0
     if ltp <= 0:
@@ -127,7 +127,7 @@ def tick_from_smart(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             "volume": int(_f(msg.get("volume_trade_for_the_day"))), "oi": int(_f(msg.get("open_interest")))}
 
 
-def response_error(payload: Any) -> Optional[str]:
+def response_error(payload: Any) -> str | None:
     if isinstance(payload, dict) and payload.get("status") is False:
         return str(payload.get("message") or payload.get("errorcode") or payload)[:300]
     return None
@@ -137,7 +137,7 @@ def response_error(payload: Any) -> Optional[str]:
 class AngelOneSession:
     provider = "angel"
 
-    def __init__(self, settings, runtime_dir: Optional[Path] = None) -> None:
+    def __init__(self, settings, runtime_dir: Path | None = None) -> None:
         self.s = settings
         self.runtime_dir = runtime_dir
         self.client = None
@@ -152,8 +152,9 @@ class AngelOneSession:
         self.errors = 0
         self.tokens: Dict[str, Dict[str, Any]] = {}
         self._master: List[Dict[str, Any]] = []
-        self._master_day: Optional[dt.date] = None
+        self._master_day: dt.date | None = None
         self._option_cache: Dict[Tuple[str, str, float, str], Dict[str, Any]] = {}
+        self._by_trading_symbol: Dict[str, Tuple[str, str, float, str]] = {}
         self._lock = asyncio.Lock()
 
     # ---------------------------------------------------------------- auth
@@ -181,8 +182,8 @@ class AngelOneSession:
 
     def _login_sync(self) -> Dict[str, Any]:
         try:
-            from SmartApi import SmartConnect  # type: ignore
             import pyotp  # type: ignore
+            from SmartApi import SmartConnect  # type: ignore
         except Exception as exc:
             raise RuntimeError("ANGEL_SDK_NOT_INSTALLED: pip install smartapi-python pyotp logzero websocket-client") from exc
         s = self.s
@@ -282,7 +283,7 @@ class AngelOneSession:
         today = dt.datetime.now(IST).date()
         return [d.isoformat() for d in expiries_for(await self.master(), u.symbol, FO_EXCHANGE[u.exchange], today)]
 
-    async def option_quotes(self, u: Underlying, expiry_iso: str, strikes: Optional[Iterable[float]] = None) -> Dict[Tuple[float, str], Dict[str, Any]]:
+    async def option_quotes(self, u: Underlying, expiry_iso: str, strikes: Iterable[float] | None = None) -> Dict[Tuple[float, str], Dict[str, Any]]:
         exchange = FO_EXCHANGE[u.exchange]
         table = option_instruments(await self.master(), u.symbol, exchange, dt.date.fromisoformat(expiry_iso))
         if not table:
@@ -307,7 +308,7 @@ class AngelOneSession:
             await asyncio.sleep(0.25)  # SmartAPI market-data rate limit is per second
         return out
 
-    async def resolve_option(self, u: Underlying, expiry_iso: str, strike: float, option_type: OptionType) -> Optional[Dict[str, Any]]:
+    async def resolve_option(self, u: Underlying, expiry_iso: str, strike: float, option_type: OptionType) -> Dict[str, Any] | None:
         key = (u.symbol, expiry_iso, float(strike), option_type.value)
         if key in self._option_cache:
             return self._option_cache[key]
@@ -331,6 +332,15 @@ class AngelOneSession:
             raise RuntimeError("ANGEL_NOT_AUTHENTICATED")
         from SmartApi.smartWebSocketV2 import SmartWebSocketV2  # type: ignore
         return SmartWebSocketV2(self.jwt_token, self.s.angel_api_key, self.s.angel_client_code, self.feed_token, max_retry_attempt=5)
+
+    def _index_trading_symbol(self, key: Tuple[str, str, float, str], hit: Dict[str, Any]) -> None:
+        ts = str(hit.get("trading_symbol") or "")
+        if ts:
+            self._by_trading_symbol[ts.upper()] = key
+
+    def lookup_trading_symbol(self, trading_symbol: str) -> Tuple[str, str, float, str] | None:
+        """Broker trading symbol -> (underlying, expiry_iso, strike, 'CE'|'PE') if this session has seen it."""
+        return self._by_trading_symbol.get(str(trading_symbol).upper())
 
     def status(self) -> dict:
         return {"provider": self.provider, "authenticated": self.authenticated, "logged_in_at": self.logged_in_at, "user_id": self.user_id, "calls": self.calls, "errors": self.errors,

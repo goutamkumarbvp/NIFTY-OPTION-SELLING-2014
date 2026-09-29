@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import httpx
 
@@ -41,7 +41,7 @@ class LLMGateway:
     def status(self) -> dict:
         return {"enabled": self.enabled, "provider": self.s.llm_provider, "model": self.s.llm_model, "calls": self.calls, "failures": self.failures, "last_error": self.last_error}
 
-    async def brief(self, evidence: Dict[str, Any]) -> Optional[str]:
+    async def brief(self, evidence: Dict[str, Any]) -> str | None:
         if not self.enabled:
             return None
         self.calls += 1

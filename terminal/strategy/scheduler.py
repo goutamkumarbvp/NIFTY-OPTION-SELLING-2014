@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Dict, Optional
+from typing import Dict
 
-from terminal.core.clock import IST, is_holiday, now_ist, parse_hhmm, session_state
+from terminal.core.clock import is_holiday, now_ist, parse_hhmm, session_state
 from terminal.core.models import Exchange, Underlying
 
 
@@ -17,13 +17,13 @@ class Scheduler:
     def _t(self, key: str) -> dt.time:
         return parse_hhmm(self.overrides.get(key) or getattr(self.s, key))
 
-    def session(self, u: Underlying, now: Optional[dt.datetime] = None) -> str:
+    def session(self, u: Underlying, now: dt.datetime | None = None) -> str:
         now = now or now_ist()
         if self.sim_always_open:
             return "OPEN"
         return session_state(now, u.session_open, u.session_close)
 
-    def can_enter(self, u: Underlying, now: Optional[dt.datetime] = None) -> tuple[bool, str]:
+    def can_enter(self, u: Underlying, now: dt.datetime | None = None) -> tuple[bool, str]:
         now = now or now_ist()
         if not self.in_operating_window(now):
             return False, "OUTSIDE_OPERATING_HOURS"
@@ -42,18 +42,18 @@ class Scheduler:
             return False, "AFTER_ENTRY_WINDOW"
         return True, "OK"
 
-    def in_operating_window(self, now: Optional[dt.datetime] = None) -> bool:
+    def in_operating_window(self, now: dt.datetime | None = None) -> bool:
         """Terminal-wide window (default 09:00–23:30 IST): no council cycles and no
         new entries outside it; exits are always allowed."""
         now = now or now_ist()
         t = now.time()
         return self._t("terminal_start_time") <= t < self._t("terminal_end_time")
 
-    def past_end_time(self, now: Optional[dt.datetime] = None) -> bool:
+    def past_end_time(self, now: dt.datetime | None = None) -> bool:
         now = now or now_ist()
         return now.time() >= self._t("terminal_end_time")
 
-    def must_square_off(self, u: Underlying, now: Optional[dt.datetime] = None) -> bool:
+    def must_square_off(self, u: Underlying, now: dt.datetime | None = None) -> bool:
         now = now or now_ist()
         if self.sim_always_open:
             return False
@@ -61,7 +61,7 @@ class Scheduler:
         cutoff = self._t("mcx_square_off_time") if u.exchange == Exchange.MCX else self._t("square_off_time")
         return t >= cutoff and session_state(now, u.session_open, u.session_close) != "CLOSED"
 
-    def is_expiry_day(self, expiry: str, now: Optional[dt.datetime] = None) -> bool:
+    def is_expiry_day(self, expiry: str, now: dt.datetime | None = None) -> bool:
         now = now or now_ist()
         return now.date().isoformat() == expiry
 

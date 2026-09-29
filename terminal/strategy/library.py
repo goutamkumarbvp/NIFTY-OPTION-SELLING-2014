@@ -6,7 +6,7 @@ its payoff profile so the risk layer can size, gate and monitor it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from terminal.core.models import Leg, OptionChain, OptionType, Side
 
@@ -45,7 +45,7 @@ def _strike_offset(chain: OptionChain, strike: float, steps: int) -> float:
     return max(candidates) if steps > 0 else min(candidates)
 
 
-def build_legs(key: str, chain: OptionChain, lots: int, params: Optional[Dict[str, float]] = None) -> List[Leg]:
+def build_legs(key: str, chain: OptionChain, lots: int, params: Dict[str, float] | None = None) -> List[Leg]:
     spec = SPECS[key]
     p = {**spec.params, **(params or {})}
     legs: List[Leg] = []

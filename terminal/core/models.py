@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 import uuid
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
 
@@ -152,13 +152,13 @@ class OptionChain(BaseModel):
     iv_atm: float
     expected_move: float  # 1 sigma to expiry in points
 
-    def find(self, strike: float, option_type: OptionType) -> Optional[OptionQuote]:
+    def find(self, strike: float, option_type: OptionType) -> OptionQuote | None:
         for r in self.rows:
             if abs(r.strike - strike) < 1e-9:
                 return r.ce if option_type == OptionType.CE else r.pe
         return None
 
-    def by_delta(self, option_type: OptionType, target_delta: float) -> Optional[OptionQuote]:
+    def by_delta(self, option_type: OptionType, target_delta: float) -> OptionQuote | None:
         best, best_err = None, 9e9
         for r in self.rows:
             q = r.ce if option_type == OptionType.CE else r.pe
@@ -180,17 +180,17 @@ class Order(BaseModel):
     lots: int
     lot_size: int
     order_type: OrderType = OrderType.MARKET
-    limit_price: Optional[float] = None
+    limit_price: float | None = None
     status: OrderStatus = OrderStatus.PENDING
-    filled_price: Optional[float] = None
+    filled_price: float | None = None
     filled_qty: int = 0
     source: OrderSource = OrderSource.MANUAL
-    strategy_run_id: Optional[str] = None
+    strategy_run_id: str | None = None
     tag: str = ""
     reason: str = ""
     created_at: float = Field(default_factory=now_ts)
     updated_at: float = Field(default_factory=now_ts)
-    broker_order_id: Optional[str] = None
+    broker_order_id: str | None = None
     charges: float = 0.0
     message: str = ""
 
@@ -216,7 +216,7 @@ class Position(BaseModel):
     gamma: float = 0.0
     theta: float = 0.0
     vega: float = 0.0
-    strategy_run_id: Optional[str] = None
+    strategy_run_id: str | None = None
     opened_at: float = Field(default_factory=now_ts)
 
     @property
@@ -244,8 +244,8 @@ class TradePlan(BaseModel):
     legs: List[Leg]
     lots: int
     premium_collected: float  # per lot net credit (positive) / debit (negative)
-    max_profit: Optional[float] = None
-    max_loss: Optional[float] = None
+    max_profit: float | None = None
+    max_loss: float | None = None
     margin_estimate: float = 0.0
     stop_loss_pct: float = 35.0
     target_pct: float = 50.0
@@ -273,14 +273,14 @@ class StrategyRun(BaseModel):
     trailing_lock_pct: float
     status: str = "ACTIVE"  # ACTIVE | EXITING | CLOSED
     entered_at: float = Field(default_factory=now_ts)
-    closed_at: Optional[float] = None
+    closed_at: float | None = None
     mtm: float = 0.0
     peak_mtm: float = 0.0
     realized_pnl: float = 0.0
     exit_reason: str = ""
     adjustments: int = 0
     source: OrderSource = OrderSource.AUTO
-    plan_id: Optional[str] = None
+    plan_id: str | None = None
     notes: List[str] = Field(default_factory=list)
 
 
@@ -331,7 +331,7 @@ class CouncilDecision(BaseModel):
     confidence: float
     decision: str  # ENTER | HOLD | AVOID | VETO | EXIT | PROTECT
     assessments: List[Assessment]
-    plan_id: Optional[str] = None
+    plan_id: str | None = None
     summary: str = ""
 
 

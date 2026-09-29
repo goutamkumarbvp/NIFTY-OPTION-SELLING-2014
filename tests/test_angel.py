@@ -1,8 +1,7 @@
 """Angel One adapter tests: pure helpers only (no SDK, no network)."""
 import datetime as dt
 
-from terminal.market.angel import (choose_index, choose_nearest_future, expiries_for, option_instruments, parse_expiry, parse_market_quote, parse_master_row,
-                                   response_error, tick_from_smart)
+from terminal.market.angel import choose_index, choose_nearest_future, expiries_for, option_instruments, parse_expiry, parse_market_quote, parse_master_row, response_error, tick_from_smart
 
 MASTER = [
     {"token": "99926000", "symbol": "Nifty 50", "name": "NIFTY", "expiry": "", "strike": "-1.000000", "lotsize": "1", "instrumenttype": "AMXIDX", "exch_seg": "NSE", "tick_size": "0.000000"},

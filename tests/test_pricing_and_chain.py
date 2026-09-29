@@ -1,12 +1,10 @@
 import datetime as dt
 
-import pytest
-
 from terminal.core.clock import expiry_series, last_weekday_of_month, next_weekday_expiry
+from terminal.core.models import OptionType
 from terminal.market.chain import OptionChainBuilder
 from terminal.market.pricing import bs_greeks, bs_price, implied_vol
 from terminal.market.universe import Universe
-from terminal.core.models import OptionType
 
 
 def test_black_scholes_put_call_parity():

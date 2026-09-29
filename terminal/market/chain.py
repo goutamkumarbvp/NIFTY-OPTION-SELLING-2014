@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from terminal.core.clock import expiry_series, now_ist, parse_hhmm, year_fraction_to_expiry
 from terminal.core.models import ChainRow, OptionChain, OptionQuote, OptionType, Underlying
@@ -79,8 +79,8 @@ class OptionChainBuilder:
         return f"{underlying}{exp_date.strftime('%d%b%y').upper()}{int(strike)}{option_type}"
 
     # ------------------------------------------------------------------ build
-    def build(self, u: Underlying, spot: float, vix: float, expiry: Optional[str] = None, now: Optional[dt.datetime] = None,
-              extra_strikes: Optional[set] = None) -> OptionChain:
+    def build(self, u: Underlying, spot: float, vix: float, expiry: str | None = None, now: dt.datetime | None = None,
+              extra_strikes: set | None = None) -> OptionChain:
         """Build the chain around ATM. ``extra_strikes`` (e.g. strikes held in open
         positions) are always included so marks never go stale after a big move."""
         now = now or now_ist()

@@ -22,7 +22,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 from terminal.core.models import Exchange, OptionType, Underlying
 
@@ -40,7 +40,7 @@ FALLBACK_INDEX_TOKENS = {"NIFTY": (256265, "NSE"), "BANKNIFTY": (260105, "NSE"),
 
 
 # --------------------------------------------------------------------------- pure helpers
-def _date(v: Any) -> Optional[dt.date]:
+def _date(v: Any) -> dt.date | None:
     if v in (None, ""):
         return None
     if isinstance(v, dt.datetime):
@@ -71,7 +71,7 @@ def parse_instrument(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def choose_index(instruments: Iterable[Dict[str, Any]], names: List[str]) -> Optional[Dict[str, Any]]:
+def choose_index(instruments: Iterable[Dict[str, Any]], names: List[str]) -> Dict[str, Any] | None:
     wanted = {n.upper() for n in names}
     for row in instruments:
         p = parse_instrument(row)
@@ -80,7 +80,7 @@ def choose_index(instruments: Iterable[Dict[str, Any]], names: List[str]) -> Opt
     return None
 
 
-def choose_nearest_future(instruments: Iterable[Dict[str, Any]], name: str, today: dt.date) -> Optional[Dict[str, Any]]:
+def choose_nearest_future(instruments: Iterable[Dict[str, Any]], name: str, today: dt.date) -> Dict[str, Any] | None:
     futs = [p for p in (parse_instrument(r) for r in instruments) if p["name"].upper() == name.upper() and p["instrument_type"] == "FUT" and p["expiry"] and p["expiry"] >= today]
     return min(futs, key=lambda p: p["expiry"]) if futs else None
 
@@ -110,7 +110,7 @@ def parse_quote(q: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def tick_from_kite(tick: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def tick_from_kite(tick: Dict[str, Any]) -> Dict[str, Any] | None:
     ltp = _f(tick.get("last_price"))
     if ltp <= 0:
         return None
@@ -127,7 +127,7 @@ def tick_from_kite(tick: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 class ZerodhaSession:
     provider = "zerodha"
 
-    def __init__(self, settings, runtime_dir: Optional[Path] = None) -> None:
+    def __init__(self, settings, runtime_dir: Path | None = None) -> None:
         self.s = settings
         self.runtime_dir = runtime_dir
         self.kite = None
@@ -140,8 +140,9 @@ class ZerodhaSession:
         self.errors = 0
         self.tokens: Dict[str, Dict[str, Any]] = {}
         self._instruments: Dict[str, List[Dict[str, Any]]] = {}
-        self._instruments_day: Optional[dt.date] = None
+        self._instruments_day: dt.date | None = None
         self._option_cache: Dict[Tuple[str, str, float, str], Dict[str, Any]] = {}
+        self._by_trading_symbol: Dict[str, Tuple[str, str, float, str]] = {}
         self._lock = asyncio.Lock()
 
     # ---------------------------------------------------------------- auth
@@ -153,7 +154,7 @@ class ZerodhaSession:
             out.append("ZERODHA_ACCESS_TOKEN (or ZERODHA_REQUEST_TOKEN + ZERODHA_API_SECRET, or run scripts/zerodha_login.py)")
         return out
 
-    def _session_file(self) -> Optional[Path]:
+    def _session_file(self) -> Path | None:
         return (self.runtime_dir / "zerodha_session.json") if self.runtime_dir else None
 
     def _saved_token(self) -> str:
@@ -302,7 +303,7 @@ class ZerodhaSession:
         today = dt.datetime.now(IST).date()
         return [d.isoformat() for d in expiries_for(await self.instruments(FO_EXCHANGE[u.exchange]), u.symbol, today)]
 
-    async def option_quotes(self, u: Underlying, expiry_iso: str, strikes: Optional[Iterable[float]] = None) -> Dict[Tuple[float, str], Dict[str, Any]]:
+    async def option_quotes(self, u: Underlying, expiry_iso: str, strikes: Iterable[float] | None = None) -> Dict[Tuple[float, str], Dict[str, Any]]:
         """Live quotes for the option strikes of one expiry (LTP, OI, volume, bid/ask)."""
         exchange = FO_EXCHANGE[u.exchange]
         table = option_instruments(await self.instruments(exchange), u.symbol, dt.date.fromisoformat(expiry_iso))
@@ -328,7 +329,7 @@ class ZerodhaSession:
                 self._option_cache[(u.symbol, expiry_iso, k[0], k[1])] = {"trading_symbol": table[k]["tradingsymbol"], "token": table[k]["token"], "exchange": exchange, "lot_size": table[k]["lot_size"]}
         return out
 
-    async def resolve_option(self, u: Underlying, expiry_iso: str, strike: float, option_type: OptionType) -> Optional[Dict[str, Any]]:
+    async def resolve_option(self, u: Underlying, expiry_iso: str, strike: float, option_type: OptionType) -> Dict[str, Any] | None:
         key = (u.symbol, expiry_iso, float(strike), option_type.value)
         if key in self._option_cache:
             return self._option_cache[key]
@@ -352,6 +353,15 @@ class ZerodhaSession:
             raise RuntimeError("ZERODHA_NOT_AUTHENTICATED")
         from kiteconnect import KiteTicker  # type: ignore
         return KiteTicker(self.s.zerodha_api_key, self.access_token)
+
+    def _index_trading_symbol(self, key: Tuple[str, str, float, str], hit: Dict[str, Any]) -> None:
+        ts = str(hit.get("trading_symbol") or "")
+        if ts:
+            self._by_trading_symbol[ts.upper()] = key
+
+    def lookup_trading_symbol(self, trading_symbol: str) -> Tuple[str, str, float, str] | None:
+        """Broker trading symbol -> (underlying, expiry_iso, strike, 'CE'|'PE') if this session has seen it."""
+        return self._by_trading_symbol.get(str(trading_symbol).upper())
 
     def status(self) -> dict:
         return {"provider": self.provider, "authenticated": self.authenticated, "logged_in_at": self.logged_in_at, "user_id": self.user_id, "calls": self.calls, "errors": self.errors,

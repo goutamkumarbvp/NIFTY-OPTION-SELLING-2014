@@ -4,8 +4,7 @@ from __future__ import annotations
 import collections
 import math
 import statistics
-import time
-from typing import Deque, Dict, List, Optional
+from typing import Deque, Dict, List
 
 from terminal.core.models import Candle, OptionChain, Tick
 
@@ -15,8 +14,8 @@ class SymbolState:
         self.candle_seconds = candle_seconds
         self.candles: Deque[Candle] = collections.deque(maxlen=keep)
         self.ticks: Deque[Tick] = collections.deque(maxlen=3600)
-        self.last: Optional[Tick] = None
-        self._cur: Optional[Candle] = None
+        self.last: Tick | None = None
+        self._cur: Candle | None = None
         self._vwap_pv = 0.0
         self._vwap_v = 0.0
 
@@ -49,7 +48,7 @@ class SymbolState:
         return self._vwap_pv / self._vwap_v if self._vwap_v else (self.last.ltp if self.last else 0.0)
 
 
-def ema(values: List[float], period: int) -> Optional[float]:
+def ema(values: List[float], period: int) -> float | None:
     if len(values) < period:
         return None
     k = 2 / (period + 1)
@@ -59,7 +58,7 @@ def ema(values: List[float], period: int) -> Optional[float]:
     return e
 
 
-def rsi(values: List[float], period: int = 14) -> Optional[float]:
+def rsi(values: List[float], period: int = 14) -> float | None:
     if len(values) <= period:
         return None
     gains = losses = 0.0
@@ -78,7 +77,7 @@ def rsi(values: List[float], period: int = 14) -> Optional[float]:
     return 100 - 100 / (1 + rs)
 
 
-def atr(candles: List[Candle], period: int = 14) -> Optional[float]:
+def atr(candles: List[Candle], period: int = 14) -> float | None:
     if len(candles) < period + 1:
         return None
     trs = []
@@ -88,7 +87,7 @@ def atr(candles: List[Candle], period: int = 14) -> Optional[float]:
     return sum(trs[-period:]) / period
 
 
-def supertrend(candles: List[Candle], period: int = 10, mult: float = 3.0) -> Optional[str]:
+def supertrend(candles: List[Candle], period: int = 10, mult: float = 3.0) -> str | None:
     if len(candles) < period + 2:
         return None
     a = atr(candles, period)
@@ -106,7 +105,7 @@ def supertrend(candles: List[Candle], period: int = 10, mult: float = 3.0) -> Op
     return "UP" if c.close >= m else "DOWN"
 
 
-def realized_vol(closes: List[float], bars_per_year: float) -> Optional[float]:
+def realized_vol(closes: List[float], bars_per_year: float) -> float | None:
     if len(closes) < 20:
         return None
     rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0]
@@ -132,11 +131,11 @@ class MarketDataProcessor:
         if tick.symbol == "INDIAVIX":
             self.vix_history.append(tick.ltp)
 
-    def last_price(self, symbol: str) -> Optional[float]:
+    def last_price(self, symbol: str) -> float | None:
         st = self.symbols.get(symbol)
         return st.last.ltp if st and st.last else None
 
-    def last_tick(self, symbol: str) -> Optional[Tick]:
+    def last_tick(self, symbol: str) -> Tick | None:
         st = self.symbols.get(symbol)
         return st.last if st else None
 
@@ -191,7 +190,7 @@ class MarketDataProcessor:
             "candles": len(cds),
         }
 
-    def sigma_move(self, symbol: str, window_seconds: int, annual_vol: float) -> Optional[float]:
+    def sigma_move(self, symbol: str, window_seconds: int, annual_vol: float) -> float | None:
         """Move over the window expressed in standard deviations of the expected move."""
         st = self.symbols.get(symbol)
         if not st or len(st.ticks) < 3:

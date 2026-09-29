@@ -1,11 +1,10 @@
 import asyncio
-import os
 import tempfile
 
 import pytest
 import pytest_asyncio
 
-from terminal.config import Settings, reset_settings_cache
+from terminal.config import Settings
 
 
 def make_settings(**overrides) -> Settings:

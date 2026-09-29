@@ -3,12 +3,10 @@ strongly favour deploying an option-selling structure now"."""
 from __future__ import annotations
 
 import datetime as dt
-import math
 from typing import List
 
 from terminal.agents.base import Agent, Assessment, MarketContext
 from terminal.core.clock import now_ist
-from terminal.core.models import OptionType
 
 
 def _clamp(x: float, lo: float = -1.0, hi: float = 1.0) -> float:
@@ -271,7 +269,6 @@ class StrategySelectorAgent(Agent):
         def add(key: str, base: float, why: str) -> None:
             if not enabled.get(key, True):
                 return
-            spec = self.t.strategies.config
             from terminal.strategy.library import SPECS
             sp = SPECS[key]
             if not naked_ok and not sp.defined_risk:

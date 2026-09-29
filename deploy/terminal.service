@@ -1,0 +1,20 @@
+# systemd unit: copy to /etc/systemd/system/terminal.service, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now terminal
+[Unit]
+Description=NIFTY AI Options Terminal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/terminal
+EnvironmentFile=/opt/terminal/.env
+ExecStart=/opt/terminal/.venv/bin/python -m terminal
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

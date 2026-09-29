@@ -14,7 +14,7 @@ import math
 import random
 import time
 from abc import ABC, abstractmethod
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List
 
 from terminal.core.clock import now_ist
 from terminal.core.models import Tick, Underlying
@@ -37,6 +37,25 @@ class MarketFeed(ABC):
 
     def on_tick(self, handler: TickHandler) -> None:
         self._handlers.append(handler)
+
+    def on_option_quote(self, handler) -> None:
+        """handler(symbol, fields) for streamed option quotes (live feeds only)."""
+        self._option_handlers = getattr(self, "_option_handlers", [])
+        self._option_handlers.append(handler)
+
+    async def _emit_option(self, symbol: str, fields: Dict) -> None:
+        for h in getattr(self, "_option_handlers", []):
+            try:
+                await h(symbol, fields)
+            except Exception:
+                log.exception("option quote handler failed")
+
+    async def subscribe_options(self, entries: List[Dict]) -> int:
+        """Subscribe streamed quotes for option contracts: [{symbol, token, exchange/segment}]. No-op by default."""
+        return 0
+
+    def streamed_options(self) -> int:
+        return len(getattr(self, "_option_tokens", {}))
 
     async def _emit(self, tick: Tick) -> None:
         self.last_tick_ts = tick.ts
@@ -119,7 +138,7 @@ class _SimSeries:
 class SimulatedFeed(MarketFeed):
     name = "simulated"
 
-    def __init__(self, universe: List[Underlying], interval: float = 1.0, speed: float = 1.0, always_open: bool = True, seed: Optional[int] = None) -> None:
+    def __init__(self, universe: List[Underlying], interval: float = 1.0, speed: float = 1.0, always_open: bool = True, seed: int | None = None) -> None:
         super().__init__()
         self.interval = max(0.1, interval)
         self.speed = max(0.1, speed)
@@ -128,7 +147,7 @@ class SimulatedFeed(MarketFeed):
         self.series: Dict[str, _SimSeries] = {u.symbol: _SimSeries(u, base_seed + i * 7919) for i, u in enumerate(universe)}
         self.vix = 13.0 + random.Random(base_seed).uniform(-1.5, 2.5)
         self.vix_prev_close = self.vix
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._day = now_ist().date()
         self.rng = random.Random(base_seed ^ 0xABCDEF)
@@ -147,7 +166,7 @@ class SimulatedFeed(MarketFeed):
         if self._task:
             try:
                 await asyncio.wait_for(self._task, timeout=2)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+            except (TimeoutError, asyncio.CancelledError):
                 self._task.cancel()
         self._task = None
 
@@ -182,7 +201,7 @@ class SimulatedFeed(MarketFeed):
             elapsed = time.time() - t0
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=max(0.02, self.interval - elapsed))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
 
@@ -201,11 +220,26 @@ class KotakNeoFeed(MarketFeed):
         super().__init__()
         self.universe = universe
         self.session = session
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._token_map: Dict[str, str] = {}  # instrument token -> our symbol
+        self._option_tokens: Dict[str, str] = {}  # option token -> our option symbol
+        self._ws = None
         self.market_status: Dict[str, str] = {}
         self.reconnects = 0
+
+    async def subscribe_options(self, entries: List[Dict]) -> int:
+        from neo_api_client.websocket.feed import WsToken  # type: ignore
+        new = [e for e in entries if str(e["token"]) not in self._option_tokens]
+        for e in new:
+            self._option_tokens[str(e["token"])] = e["symbol"]
+        if new and self._ws is not None and self.connected:
+            try:
+                await self._ws.subscribe_scrips([WsToken(e.get("segment") or e.get("exchange") or "nse_fo", str(e["token"])) for e in new])
+            except Exception as exc:
+                self.errors += 1
+                log.warning("kotak option subscribe failed: %s", exc)
+        return len(new)
 
     async def start(self) -> None:
         if self._task and not self._task.done():
@@ -229,6 +263,7 @@ class KotakNeoFeed(MarketFeed):
             except (asyncio.CancelledError, Exception):
                 pass
         self._task = None
+        self._ws = None
 
     async def reconnect(self) -> None:
         await self.stop()
@@ -249,9 +284,12 @@ class KotakNeoFeed(MarketFeed):
             try:
                 ws = self.session.websocket()
                 async with ws:
+                    self._ws = ws
                     self.connected = True
                     await ws.subscribe_exchange()
                     await ws.subscribe_scrips([WsToken(v["segment"], str(v["token"])) for v in self.session.tokens.values()])
+                    if self._option_tokens:
+                        await ws.subscribe_scrips([WsToken("nse_fo", tok) for tok in self._option_tokens])
                     backoff = 2.0
                     async for msg in ws:
                         if self._stop.is_set():
@@ -262,6 +300,10 @@ class KotakNeoFeed(MarketFeed):
                             continue
                         fields = tick_from_message(msg)
                         if not fields:
+                            continue
+                        osym = self._option_tokens.get(fields["token"])
+                        if osym is not None:
+                            await self._emit_option(osym, {"ltp": fields["ltp"], "oi": fields["oi"], "volume": fields["volume"]})
                             continue
                         sym = self._token_map.get(fields["token"])
                         if sym is None:
@@ -282,7 +324,7 @@ class KotakNeoFeed(MarketFeed):
                         log.warning("kotak re-login failed: %s", e2)
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=backoff)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 backoff = min(backoff * 2, 60.0)
         self.connected = False
@@ -308,10 +350,25 @@ class ZerodhaFeed(MarketFeed):
         self.universe = universe
         self.session = session
         self._ticker = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._token_map: Dict[int, str] = {}
+        self._option_tokens: Dict[int, str] = {}
         self.reconnects = 0
         self.socket_connected = False
+
+    async def subscribe_options(self, entries: List[Dict]) -> int:
+        new = [e for e in entries if int(e["token"]) not in self._option_tokens]
+        for e in new:
+            self._option_tokens[int(e["token"])] = e["symbol"]
+        if new and self._ticker is not None and self.socket_connected:
+            try:
+                toks = [int(e["token"]) for e in new]
+                self._ticker.subscribe(toks)
+                self._ticker.set_mode(self._ticker.MODE_FULL, toks)
+            except Exception as exc:
+                self.errors += 1
+                log.warning("zerodha option subscribe failed: %s", exc)
+        return len(new)
 
     async def start(self) -> None:
         if self._ticker is not None:
@@ -329,13 +386,21 @@ class ZerodhaFeed(MarketFeed):
         def on_connect(ws, response):
             self.socket_connected = True
             self.connected = True
-            ws.subscribe(tokens)
-            ws.set_mode(ws.MODE_FULL, tokens)
+            all_tokens = tokens + list(self._option_tokens)
+            ws.subscribe(all_tokens)
+            ws.set_mode(ws.MODE_FULL, all_tokens)
 
         def on_ticks(ws, ticks):
             for t in ticks:
                 f = tick_from_kite(t)
                 if not f:
+                    continue
+                osym = self._option_tokens.get(f["token"])
+                if osym is not None and self._loop and not self._loop.is_closed():
+                    depth = t.get("depth") or {}
+                    bid = (depth.get("buy") or [{}])[0].get("price", 0) if depth.get("buy") else 0
+                    ask = (depth.get("sell") or [{}])[0].get("price", 0) if depth.get("sell") else 0
+                    asyncio.run_coroutine_threadsafe(self._emit_option(osym, {"ltp": f["ltp"], "oi": f["oi"], "volume": f["volume"], "bid": bid, "ask": ask}), self._loop)
                     continue
                 sym = self._token_map.get(f["token"])
                 if sym is None:
@@ -409,9 +474,26 @@ class AngelOneFeed(MarketFeed):
         self.session = session
         self._ws = None
         self._thread = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._token_map: Dict[str, str] = {}
+        self._option_tokens: Dict[str, str] = {}
         self.reconnects = 0
+
+    async def subscribe_options(self, entries: List[Dict]) -> int:
+        from terminal.market.angel import WS_EXCHANGE_TYPE
+        new = [e for e in entries if str(e["token"]) not in self._option_tokens]
+        for e in new:
+            self._option_tokens[str(e["token"])] = e["symbol"]
+        if new and self._ws is not None and self.connected:
+            groups: Dict[int, List[str]] = {}
+            for e in new:
+                groups.setdefault(WS_EXCHANGE_TYPE.get(str(e.get("exchange") or "NFO").upper(), 2), []).append(str(e["token"]))
+            try:
+                self._ws.subscribe("aiterm-opt", self._ws.SNAP_QUOTE, [{"exchangeType": k, "tokens": v} for k, v in groups.items()])
+            except Exception as exc:
+                self.errors += 1
+                log.warning("angel option subscribe failed: %s", exc)
+        return len(new)
 
     async def start(self) -> None:
         if self._ws is not None:
@@ -433,10 +515,16 @@ class AngelOneFeed(MarketFeed):
         def on_open(wsapp):
             feed.connected = True
             ws.subscribe("aiterm", ws.SNAP_QUOTE, token_list)
+            if feed._option_tokens:
+                ws.subscribe("aiterm-opt", ws.SNAP_QUOTE, [{"exchangeType": 2, "tokens": list(feed._option_tokens)}])
 
         def on_data(wsapp, message):
             f = tick_from_smart(message) if isinstance(message, dict) else None
             if not f:
+                return
+            osym = feed._option_tokens.get(f["token"])
+            if osym is not None and feed._loop and not feed._loop.is_closed():
+                asyncio.run_coroutine_threadsafe(feed._emit_option(osym, {"ltp": f["ltp"], "oi": f["oi"], "volume": f["volume"]}), feed._loop)
                 return
             sym = feed._token_map.get(f["token"])
             if sym is None:

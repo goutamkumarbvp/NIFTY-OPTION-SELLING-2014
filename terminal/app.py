@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Set
 
 from terminal import PRODUCT, __version__
 from terminal.agents.orchestrator import Council
@@ -18,13 +18,14 @@ from terminal.execution.brokers.paper import PaperBroker
 from terminal.execution.exit_guard import ExitGuard
 from terminal.execution.orders import OrderManager
 from terminal.execution.positions import PositionManager
-from terminal.market.chain import OptionChainBuilder
+from terminal.execution.reconcile import OrderReconciler, PositionReconciler
 from terminal.market.angel import AngelOneSession
+from terminal.market.chain import OptionChainBuilder
 from terminal.market.feed import AngelOneFeed, KotakNeoFeed, MarketFeed, SimulatedFeed, ZerodhaFeed
 from terminal.market.kotak import KotakNeoSession
-from terminal.market.zerodha import ZerodhaSession
 from terminal.market.processor import MarketDataProcessor
 from terminal.market.universe import VIX_SYMBOL, Universe
+from terminal.market.zerodha import ZerodhaSession
 from terminal.monitoring.health import HealthMonitor
 from terminal.notifications.alerts import AlertEngine
 from terminal.risk.manager import RiskManager
@@ -36,7 +37,7 @@ log = logging.getLogger("terminal")
 
 
 class Terminal:
-    def __init__(self, settings: Optional[Settings] = None, seed: Optional[int] = None) -> None:
+    def __init__(self, settings: Settings | None = None, seed: int | None = None) -> None:
         self.settings = settings or get_settings()
         s = self.settings
         s.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -83,6 +84,10 @@ class Terminal:
         self.orders = OrderManager(self)
         self.exit_guard = ExitGuard(self)
         self.strategies = StrategyEngine(self)
+        self.order_reconciler = OrderReconciler(self)
+        self.position_reconciler = PositionReconciler(self)
+        self.stream_stats = {"subscribed": 0, "quotes": 0, "last_ts": 0.0}
+        self.recovery: Dict[str, int] = {}
         self._eod_done_day = ""
         self.risk = RiskManager(self)
         self.council = Council(self)
@@ -91,10 +96,11 @@ class Terminal:
         self._stop = asyncio.Event()
         self._chain_refresh_seconds = 2.0 if s.data_source == "simulated" else 3.0
         self.feed.on_tick(self._on_tick)
+        self.feed.on_option_quote(self._on_option_quote)
         self.audit.record("TERMINAL_INIT", {"version": __version__, "mode": self.mode.value, "env": self.env.value, "data_source": s.data_source, "broker": self.broker.name})
 
     # ------------------------------------------------------------- factories
-    def _make_feed(self, seed: Optional[int]) -> MarketFeed:
+    def _make_feed(self, seed: int | None) -> MarketFeed:
         s = self.settings
         if s.data_source.lower() == "kotak":
             return KotakNeoFeed(self.universe.all(), self.live)
@@ -118,6 +124,7 @@ class Terminal:
 
     # ------------------------------------------------------------- lifecycle
     async def start(self) -> None:
+        self._recover()
         try:
             await self.broker.connect()
         except Exception as exc:
@@ -133,6 +140,11 @@ class Terminal:
                        asyncio.create_task(self._feed_supervisor(), name="feed-supervisor")]
         if self.live is not None:
             self._tasks.append(asyncio.create_task(self._live_chain_loop(), name="live-chain-poller"))
+            self._tasks.append(asyncio.create_task(self._stream_loop(), name="option-stream"))
+        if getattr(self.broker, "live", False):
+            self._tasks.append(asyncio.create_task(self._reconcile_loop(), name="reconcile-loop"))
+        if self.recovery.get("runs_exiting"):
+            asyncio.create_task(self.strategies.resume_exits())
         self.engine_running = True
         self.log("INFO", "terminal", f"{PRODUCT} v{__version__} started: mode={self.mode.value} env={self.env.value} feed={self.feed.name} broker={self.broker.name}")
 
@@ -149,6 +161,79 @@ class Terminal:
         await self.feed.stop()
         self.db.close()
 
+    # ------------------------------------------------------------- recovery
+    def _recover(self) -> None:
+        """Rebuild the book after a restart: positions, working orders, active/exiting runs."""
+        try:
+            positions = self.positions.restore()
+            orders = self.orders.restore()
+            runs = self.strategies.restore()
+            exiting = sum(1 for r in self.strategies.runs.values() if r.status == "EXITING")
+            for plan in self.strategies.plans.values():
+                if plan.status == "PROPOSED":
+                    plan.status = "EXPIRED"
+            self.recovery = {"positions": positions, "orders": orders, "runs": runs, "runs_exiting": exiting}
+            if positions or orders or runs:
+                self.log("WARNING", "recovery", f"restored {positions} positions, {orders} working orders, {runs} runs ({exiting} exiting) from the last session")
+                self.audit.record("RECOVERY", self.recovery, "system")
+        except Exception:
+            log.exception("recovery failed")
+
+    async def _on_option_quote(self, symbol: str, fields: Dict) -> None:
+        q = {"ltp": fields.get("ltp", 0)}
+        for k in ("oi", "volume", "bid", "ask", "oi_change"):
+            if fields.get(k) is not None:
+                q[k] = fields[k]
+        self.chain_builder.apply_broker_quotes({symbol: q})
+        self.stream_stats["quotes"] += 1
+        self.stream_stats["last_ts"] = time.time()
+
+    async def _stream_loop(self) -> None:
+        """Keep held and near-ATM option contracts subscribed on the live WebSocket."""
+        await asyncio.sleep(8.0)
+        while not self._stop.is_set():
+            try:
+                if self.live.authenticated:
+                    wanted: Dict[str, tuple] = {}
+                    for p in self.positions.open_positions():
+                        wanted[p.symbol] = (p.underlying, p.expiry, p.strike, p.option_type)
+                    for sym in self.council.focus:
+                        ch = self.chains.get(sym)
+                        if not ch:
+                            continue
+                        step = self.universe.get(sym).strike_step
+                        for r in ch.rows:
+                            if abs(r.strike - ch.atm_strike) <= 8 * step:
+                                wanted[r.ce.symbol] = (sym, ch.expiry, r.strike, r.ce.option_type)
+                                wanted[r.pe.symbol] = (sym, ch.expiry, r.strike, r.pe.option_type)
+                    entries = []
+                    for osym, (und, exp, strike, ot) in list(wanted.items())[:250]:
+                        try:
+                            hit = await self.live.resolve_option(self.universe.get(und), exp, strike, ot)
+                        except Exception:
+                            hit = None
+                        if hit and hit.get("token"):
+                            entries.append({"symbol": osym, "token": hit["token"], "segment": hit.get("segment") or "nse_fo", "exchange": hit.get("exchange") or "NFO"})
+                    if entries:
+                        await self.feed.subscribe_options(entries)
+                    self.stream_stats["subscribed"] = self.feed.streamed_options()
+            except Exception:
+                log.exception("stream loop error")
+            await asyncio.sleep(15.0)
+
+    async def _reconcile_loop(self) -> None:
+        await asyncio.sleep(3.0)
+        n = 0
+        while not self._stop.is_set():
+            try:
+                await self.order_reconciler.tick()
+                if n % max(1, int(self.settings.reconcile_seconds / 2)) == 0:
+                    await self.position_reconciler.tick()
+            except Exception:
+                log.exception("reconcile loop error")
+            n += 1
+            await asyncio.sleep(2.0)
+
     # ------------------------------------------------------------- helpers
     def log(self, level: str, source: str, message: str) -> None:
         getattr(log, level.lower() if level.lower() in ("debug", "info", "warning", "error", "critical") else "info")("[%s] %s", source, message)
@@ -158,10 +243,10 @@ class Terminal:
             pass
         self.bus.publish_nowait("log", {"ts": time.time(), "level": level, "source": source, "message": message})
 
-    def quote(self, symbol: str) -> Optional[OptionQuote]:
+    def quote(self, symbol: str) -> OptionQuote | None:
         return self._quotes.get(symbol)
 
-    def chain_for(self, underlying: str, expiry: Optional[str] = None) -> OptionChain:
+    def chain_for(self, underlying: str, expiry: str | None = None) -> OptionChain:
         u = self.universe.get(underlying)
         cur = self.chains.get(u.symbol)
         if cur is not None and (expiry is None or cur.expiry == expiry):
@@ -360,11 +445,12 @@ class Terminal:
             "pending_plans": [p.model_dump(mode="json") for p in self.council.pending_plans()], "council": {"cycle": self.council.cycle, "busy": self.council.busy, "focus": self.council.focus, "auto_trades_today": self.council.auto_trades_today,
             "last": [d.model_dump(mode="json") | {"assessments": [{k: v for k, v in a.model_dump(mode="json").items() if k != "data"} for a in d.assessments]} for d in self.council.decisions[-4:][::-1]],
             "agents": [a.status() for a in self.council.agents], "briefs": self.council.last_brief, "llm": self.council.llm.status()},
-            "alerts": [a.model_dump(mode="json") for a in self.alerts.recent[-15:][::-1]], "scheduler": self.scheduler.describe(), "exits": self.exit_guard.describe(), "pnl": {"daily": self.positions.daily_pnl(), "realized": round(self.positions.realized_today, 2), "unrealized": self.positions.unrealized(), "charges": round(self.positions.charges_today, 2)},
+            "alerts": [a.model_dump(mode="json") for a in self.alerts.recent[-15:][::-1]], "scheduler": self.scheduler.describe(), "exits": self.exit_guard.describe(),
+            "reconcile": {"orders": self.order_reconciler.describe(), "positions": self.position_reconciler.describe(), "stream": self.stream_stats, "recovery": self.recovery}, "pnl": {"daily": self.positions.daily_pnl(), "realized": round(self.positions.realized_today, 2), "unrealized": self.positions.unrealized(), "charges": round(self.positions.charges_today, 2)},
         }
 
 
-_TERMINAL: Optional[Terminal] = None
+_TERMINAL: Terminal | None = None
 
 
 def get_terminal() -> Terminal:
@@ -374,6 +460,6 @@ def get_terminal() -> Terminal:
     return _TERMINAL
 
 
-def set_terminal(t: Optional[Terminal]) -> None:
+def set_terminal(t: Terminal | None) -> None:
     global _TERMINAL
     _TERMINAL = t

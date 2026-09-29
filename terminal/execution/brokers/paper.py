@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Dict, Optional
+from typing import Dict
 
 from terminal.core.models import Exchange, Order, OrderStatus, OrderType, Side
 from terminal.execution.brokers.base import Broker, QuoteLookup
@@ -26,7 +26,7 @@ class PaperBroker(Broker):
     name = "paper"
     live = False
 
-    def __init__(self, capital: float, seed: Optional[int] = None) -> None:
+    def __init__(self, capital: float, seed: int | None = None) -> None:
         super().__init__()
         self.capital = capital
         self.rng = random.Random(seed)

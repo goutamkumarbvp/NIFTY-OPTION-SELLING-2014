@@ -19,7 +19,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 from terminal.core.models import Exchange, OptionType, Underlying
 
@@ -61,7 +61,7 @@ def _num(x: Any, default: float = 0.0) -> float:
         return default
 
 
-def parse_expiry(value: Any) -> Optional[dt.date]:
+def parse_expiry(value: Any) -> dt.date | None:
     """Kotak returns expiries as strings in several layouts or as epoch seconds."""
     if value in (None, ""):
         return None
@@ -95,7 +95,7 @@ def rows_of(payload: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def response_error(payload: Any) -> Optional[str]:
+def response_error(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         return None
     if payload.get("error") or payload.get("Error"):
@@ -123,7 +123,7 @@ def parse_scrip_row(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def choose_index_token(rows: List[Dict[str, Any]], candidates: List[str]) -> Optional[Dict[str, Any]]:
+def choose_index_token(rows: List[Dict[str, Any]], candidates: List[str]) -> Dict[str, Any] | None:
     parsed = [parse_scrip_row(r) for r in rows]
     for cand in candidates:
         c = cand.lower()
@@ -138,7 +138,7 @@ def choose_index_token(rows: List[Dict[str, Any]], candidates: List[str]) -> Opt
     return None
 
 
-def choose_nearest_future(rows: List[Dict[str, Any]], today: dt.date) -> Optional[Dict[str, Any]]:
+def choose_nearest_future(rows: List[Dict[str, Any]], today: dt.date) -> Dict[str, Any] | None:
     futs = [p for p in (parse_scrip_row(r) for r in rows) if p["expiry"] and p["expiry"] >= today and (p["inst_type"].startswith("FUT") or p["option_type"] in ("", "XX", "FF"))]
     futs = [f for f in futs if f["option_type"] not in ("CE", "PE")]
     return min(futs, key=lambda f: f["expiry"]) if futs else None
@@ -182,7 +182,7 @@ def _quote_from(q: Dict[str, Any], strike: float) -> Dict[str, Any]:
     }
 
 
-def tick_from_message(msg: Any) -> Optional[Dict[str, Any]]:
+def tick_from_message(msg: Any) -> Dict[str, Any] | None:
     """Turn an SFeed message (SFeedIndex / SFeedScrip / SFeedScripLite) into plain fields."""
     g = lambda *names: next((getattr(msg, n) for n in names if getattr(msg, n, None) is not None), None)  # noqa: E731
     ltp = g("last_traded_price", "ltp")
@@ -203,7 +203,7 @@ def tick_from_message(msg: Any) -> Optional[Dict[str, Any]]:
 class KotakNeoSession:
     provider = "kotak"
 
-    def __init__(self, settings, runtime_dir: Optional[Path] = None) -> None:
+    def __init__(self, settings, runtime_dir: Path | None = None) -> None:
         self.s = settings
         self.client = None
         self.authenticated = False
@@ -211,6 +211,7 @@ class KotakNeoSession:
         self.last_error = ""
         self.tokens: Dict[str, Dict[str, Any]] = {}  # our symbol -> {token, segment, trading_symbol}
         self._option_cache: Dict[Tuple[str, str, float, str], Dict[str, Any]] = {}
+        self._by_trading_symbol: Dict[str, Tuple[str, str, float, str]] = {}
         self._expiry_cache: Dict[str, Dict[str, str]] = {}  # underlying -> {iso: kotak string}
         self._lock = asyncio.Lock()
         self.calls = 0
@@ -242,8 +243,8 @@ class KotakNeoSession:
 
     def _login_sync(self) -> Dict[str, Any]:
         try:
-            from neo_api_client import NeoAPI  # type: ignore
             import pyotp  # type: ignore
+            from neo_api_client import NeoAPI  # type: ignore
         except Exception as exc:
             raise RuntimeError("KOTAK_SDK_NOT_INSTALLED: pip install kotakneoapi==3.0.6 pyotp") from exc
         s = self.s
@@ -364,7 +365,7 @@ class KotakNeoSession:
                 self._option_cache[(u.symbol, expiry_iso, strike, ot)] = q
         return parsed
 
-    async def option_quotes(self, u: Underlying, expiry_iso: str, strikes: Optional[Iterable[float]] = None) -> Dict[Tuple[float, str], Dict[str, Any]]:
+    async def option_quotes(self, u: Underlying, expiry_iso: str, strikes: Iterable[float] | None = None) -> Dict[Tuple[float, str], Dict[str, Any]]:
         """Generic live-quote entry point (Kotak returns the whole chain; strikes are a filter)."""
         parsed = await self.option_chain(u, expiry_iso)
         if strikes:
@@ -372,7 +373,7 @@ class KotakNeoSession:
             parsed = {k: v for k, v in parsed.items() if k[0] in wanted}
         return parsed
 
-    async def resolve_option(self, u: Underlying, expiry_iso: str, strike: float, option_type: OptionType) -> Optional[Dict[str, Any]]:
+    async def resolve_option(self, u: Underlying, expiry_iso: str, strike: float, option_type: OptionType) -> Dict[str, Any] | None:
         key = (u.symbol, expiry_iso, float(strike), option_type.value)
         cached = self._option_cache.get(key)
         if cached and cached.get("trading_symbol"):
@@ -406,6 +407,15 @@ class KotakNeoSession:
         if self.client is None or not self.authenticated:
             raise RuntimeError("KOTAK_NOT_AUTHENTICATED")
         return self.client.create_websocket()
+
+    def _index_trading_symbol(self, key: Tuple[str, str, float, str], hit: Dict[str, Any]) -> None:
+        ts = str(hit.get("trading_symbol") or "")
+        if ts:
+            self._by_trading_symbol[ts.upper()] = key
+
+    def lookup_trading_symbol(self, trading_symbol: str) -> Tuple[str, str, float, str] | None:
+        """Broker trading symbol -> (underlying, expiry_iso, strike, 'CE'|'PE') if this session has seen it."""
+        return self._by_trading_symbol.get(str(trading_symbol).upper())
 
     def status(self) -> dict:
         return {"provider": self.provider, "authenticated": self.authenticated, "logged_in_at": self.logged_in_at, "calls": self.calls, "errors": self.errors, "last_error": self.last_error, "needs_daily_login": False,

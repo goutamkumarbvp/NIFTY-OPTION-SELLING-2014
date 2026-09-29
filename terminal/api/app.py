@@ -9,9 +9,9 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -22,7 +22,7 @@ from terminal.analytics.performance import summarize
 from terminal.api.auth import AuthManager, current_user, require, ws_user
 from terminal.app import Terminal, get_terminal, set_terminal
 from terminal.core.models import OrderSource, OrderType, Side, TerminalMode
-from terminal.strategy.library import SPECS, payoff_profile
+from terminal.strategy.library import payoff_profile
 
 log = logging.getLogger("terminal.api")
 UI_DIR = Path(__file__).resolve().parent.parent / "ui"
@@ -43,7 +43,7 @@ class OrderBody(BaseModel):
     side: str
     lots: int = Field(gt=0)
     order_type: str = "MARKET"
-    limit_price: Optional[float] = None
+    limit_price: float | None = None
     reason: str = "manual"
 
 
@@ -51,12 +51,12 @@ class DeployBody(BaseModel):
     strategy: str
     underlying: str
     lots: int = Field(1, gt=0)
-    expiry: Optional[str] = None
+    expiry: str | None = None
     params: Dict[str, float] = Field(default_factory=dict)
 
 
 class ApproveBody(BaseModel):
-    lots: Optional[int] = None
+    lots: int | None = None
     reason: str = ""
 
 
@@ -96,12 +96,12 @@ class LoginBody(BaseModel):
 
 
 class ScheduleBody(BaseModel):
-    terminal_start_time: Optional[str] = None
-    terminal_end_time: Optional[str] = None
-    entry_window_start: Optional[str] = None
-    entry_window_end: Optional[str] = None
-    square_off_time: Optional[str] = None
-    mcx_square_off_time: Optional[str] = None
+    terminal_start_time: str | None = None
+    terminal_end_time: str | None = None
+    entry_window_start: str | None = None
+    entry_window_end: str | None = None
+    square_off_time: str | None = None
+    mcx_square_off_time: str | None = None
 
 
 class ShockBody(BaseModel):
@@ -114,7 +114,7 @@ class EventsBody(BaseModel):
 
 
 # ----------------------------------------------------------------------- app
-def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
+def create_app(terminal: Terminal | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         t: Terminal = app.state.terminal
@@ -243,7 +243,7 @@ def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
         return ok({"markets": t.market_overview(), "vix": vix.model_dump() if vix else None, "vix_rank": t.processor.vix_rank()})
 
     @app.get("/api/market/chain")
-    async def chain(underlying: str = "NIFTY", expiry: Optional[str] = None, user: dict = Depends(require("viewer"))):
+    async def chain(underlying: str = "NIFTY", expiry: str | None = None, user: dict = Depends(require("viewer"))):
         t = T()
         if not t.universe.has(underlying):
             raise HTTPException(status_code=404, detail="UNKNOWN_UNDERLYING")
@@ -397,7 +397,7 @@ def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
         return ok(T().db.council(limit))
 
     @app.post("/api/agents/run")
-    async def agents_run(underlying: Optional[str] = None, user: dict = Depends(require("trader"))):
+    async def agents_run(underlying: str | None = None, user: dict = Depends(require("trader"))):
         t = T()
         decisions = await t.council.run_cycle([underlying.upper()] if underlying else None, force=True)
         return ok([d.model_dump(mode="json") for d in decisions])
@@ -464,7 +464,7 @@ def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
         return ok(T().health.describe())
 
     @app.get("/api/system/logs")
-    async def system_logs(limit: int = 300, level: Optional[str] = None, source: Optional[str] = None, user: dict = Depends(require("viewer"))):
+    async def system_logs(limit: int = 300, level: str | None = None, source: str | None = None, user: dict = Depends(require("viewer"))):
         return ok(T().db.logs(limit, level, source))
 
     @app.get("/api/system/audit")
@@ -521,6 +521,19 @@ def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
             await t.feed.reconnect()
         t.audit.record("LIVE_SESSION_RECONNECT", {"provider": live.provider, "tokens": list(found)}, user["username"])
         return ok({"provider": live.provider, "login": result, "tokens": found})
+
+    @app.get("/api/broker/reconcile")
+    async def reconcile_status(user: dict = Depends(require("viewer"))):
+        t = T()
+        return ok({"orders": t.order_reconciler.describe(), "positions": t.position_reconciler.describe(), "stream": t.stream_stats, "recovery": t.recovery})
+
+    @app.post("/api/broker/reconcile")
+    async def reconcile_now(adopt: bool = False, user: dict = Depends(require("admin"))):
+        t = T()
+        await t.order_reconciler.tick()
+        res = await t.position_reconciler.tick(adopt=adopt)
+        t.audit.record("RECONCILE_MANUAL", {"adopt": adopt, "ok": res.get("ok")}, user["username"])
+        return ok({"positions": res, "orders": t.order_reconciler.describe()})
 
     @app.get("/api/broker/zerodha/login-url")
     async def zerodha_login_url(user: dict = Depends(require("admin"))):

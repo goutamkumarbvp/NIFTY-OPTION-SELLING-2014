@@ -9,12 +9,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from terminal.agents.base import Agent, MarketContext
 from terminal.agents.llm import LLMGateway
-from terminal.agents.specialists import (EventRiskAgent, ExecutionAgent, MarketAnalystAgent, OptionsFlowAgent, ReviewAgent, RiskAgent, SentinelAgent,
-                                         StrategySelectorAgent, VolatilityAgent)
+from terminal.agents.specialists import EventRiskAgent, ExecutionAgent, MarketAnalystAgent, OptionsFlowAgent, ReviewAgent, RiskAgent, SentinelAgent, StrategySelectorAgent, VolatilityAgent
 from terminal.core.models import Assessment, CouncilDecision, OrderSource, TerminalMode, TradePlan
 
 log = logging.getLogger("terminal.council")
@@ -63,7 +62,7 @@ class Council:
                              events=t.db.get_setting("events", []) or [])
 
     # ------------------------------------------------------------- cycle
-    async def run_cycle(self, underlyings: Optional[List[str]] = None, force: bool = False) -> List[CouncilDecision]:
+    async def run_cycle(self, underlyings: List[str] | None = None, force: bool = False) -> List[CouncilDecision]:
         if self.busy and not force:
             return []
         self.busy = True
@@ -108,7 +107,7 @@ class Council:
         vetoes = [a for a in assessments if a.veto]
         sentinel = by_name.get("Sentinel")
         decision = "HOLD"
-        plan: Optional[TradePlan] = None
+        plan: TradePlan | None = None
         summary_bits: List[str] = []
         # protective actions first (both modes)
         if sentinel and sentinel.stance == "PROTECT" and self.t.strategies.active_runs():
@@ -200,7 +199,7 @@ class Council:
     def pending_plans(self) -> List[TradePlan]:
         return [p for p in self.t.strategies.plans.values() if p.status == "PROPOSED"]
 
-    async def approve_plan(self, plan_id: str, actor: str, lots: Optional[int] = None) -> str:
+    async def approve_plan(self, plan_id: str, actor: str, lots: int | None = None) -> str:
         plan = self.t.strategies.plans.get(plan_id)
         if plan is None or plan.status != "PROPOSED":
             raise ValueError("PLAN_NOT_PENDING")

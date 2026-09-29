@@ -6,9 +6,9 @@ entries; nothing can bypass this layer (agents, API, UI all go through it).
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from terminal.core.models import Exchange, Order, OrderSource, OrderStatus, RiskLevel, RiskSnapshot, Side, TerminalMode, TradePlan
+from terminal.core.models import Order, OrderSource, OrderStatus, RiskLevel, RiskSnapshot, Side, TerminalMode, TradePlan
 from terminal.strategy.library import estimate_margin
 
 
@@ -58,6 +58,13 @@ class RiskManager:
 
     # ---------------------------------------------------------------- margin
     def margin_used(self) -> float:
+        """Broker-reported used margin when fresh (live), otherwise the SPAN-like estimate."""
+        rec = getattr(self.t, "position_reconciler", None)
+        if rec is not None and rec.margin.get("used") is not None and time.time() - rec.margin.get("ts", 0) < 180:
+            return round(float(rec.margin["used"]), 0)
+        return self.estimated_margin()
+
+    def estimated_margin(self) -> float:
         total = 0.0
         by_run: Dict[str, float] = {}
         for run in self.t.strategies.runs.values():

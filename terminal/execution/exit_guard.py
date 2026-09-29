@@ -20,7 +20,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from terminal.core.models import Order, OrderSource, OrderStatus, Side
 
@@ -32,13 +32,13 @@ class ExitIntent:
     symbol: str
     reason: str
     source: OrderSource
-    run_id: Optional[str]
+    run_id: str | None
     created: float = field(default_factory=time.time)
     attempts: int = 0
     last_attempt: float = 0.0
-    last_order_id: Optional[str] = None
+    last_order_id: str | None = None
     suppressed: int = 0
-    resolved_at: Optional[float] = None
+    resolved_at: float | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -51,7 +51,7 @@ class ExitGuard:
         self.max_attempts = int(getattr(terminal.settings, "exit_max_attempts", 60))
 
     # ---------------------------------------------------------------- requests
-    async def request(self, symbol: str, reason: str, source: OrderSource, run_id: Optional[str] = None, actor: str = "exit-guard") -> Optional[Order]:
+    async def request(self, symbol: str, reason: str, source: OrderSource, run_id: str | None = None, actor: str = "exit-guard") -> Order | None:
         """Ask for `symbol` to be squared off. Returns the order sent, or None when
         nothing was sent (already flat, or an exit is already in flight)."""
         pos = self.t.positions.positions.get(symbol)
@@ -72,11 +72,11 @@ class ExitGuard:
             return None
         return await self._place(intent, actor)
 
-    async def _place(self, intent: ExitIntent, actor: str) -> Optional[Order]:
+    async def _place(self, intent: ExitIntent, actor: str) -> Order | None:
         async with intent.lock:  # one exit order per symbol at a time, whichever layer asks
             return await self._place_locked(intent, actor)
 
-    async def _place_locked(self, intent: ExitIntent, actor: str) -> Optional[Order]:
+    async def _place_locked(self, intent: ExitIntent, actor: str) -> Order | None:
         pos = self.t.positions.positions.get(intent.symbol)
         if pos is None or pos.net_qty == 0:
             self._resolve(intent.symbol, "flat")
