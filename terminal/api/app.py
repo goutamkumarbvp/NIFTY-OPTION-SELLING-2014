@@ -483,26 +483,57 @@ def create_app(terminal: Optional[Terminal] = None) -> FastAPI:
         masked["runtime_dir"] = str(s.runtime_dir)
         return ok({"settings": masked, "auth": app.state.auth.describe(), "strategies": T().strategies.describe()["strategies"], "risk_limits": T().risk.limits})
 
-    # ------------------------------------------------------------------ kotak neo
-    @app.get("/api/broker/kotak/status")
-    async def kotak_status(user: dict = Depends(require("viewer"))):
-        t = T()
-        if t.kotak is None:
-            return ok({"configured": False, "hint": "Set DATA_SOURCE=kotak (and/or BROKER=kotak with TRADING_ENV=LIVE) plus NEO_* credentials in .env"})
-        return ok({"configured": True, **t.kotak.status(), "chain": t.kotak_chain_stats, "feed": t.feed.status()})
+    # ------------------------------------------------------------------ live broker session (kotak / zerodha)
+    def _live(t: Terminal):
+        if t.live is None:
+            raise ValueError("NO_LIVE_PROVIDER: set DATA_SOURCE=kotak|zerodha (and/or BROKER=... with TRADING_ENV=LIVE) plus credentials in .env")
+        return t.live
 
-    @app.post("/api/broker/kotak/connect")
-    async def kotak_connect(user: dict = Depends(require("admin"))):
+    @app.get("/api/broker/live/status")
+    @app.get("/api/broker/kotak/status", include_in_schema=False)
+    @app.get("/api/broker/zerodha/status", include_in_schema=False)
+    async def live_status(user: dict = Depends(require("viewer"))):
         t = T()
-        if t.kotak is None:
-            raise ValueError("KOTAK_NOT_CONFIGURED")
-        t.kotak.authenticated = False
-        result = await t.kotak.connect()
-        found = await t.kotak.resolve_index_tokens(t.universe.all(), include_vix=True)
-        if t.feed.name == "kotak_neo":
+        if t.live is None:
+            return ok({"configured": False, "provider": None, "hint": "Set DATA_SOURCE=kotak or DATA_SOURCE=zerodha plus credentials in .env"})
+        return ok({"configured": True, **t.live.status(), "chain": t.live_chain_stats, "feed": t.feed.status()})
+
+    @app.post("/api/broker/live/connect")
+    @app.post("/api/broker/kotak/connect", include_in_schema=False)
+    @app.post("/api/broker/zerodha/connect", include_in_schema=False)
+    async def live_connect(user: dict = Depends(require("admin"))):
+        t = T()
+        live = _live(t)
+        live.authenticated = False
+        result = await live.connect()
+        found = await live.resolve_index_tokens(t.universe.all(), include_vix=True)
+        if t.feed.name in ("kotak_neo", "zerodha_kite"):
             await t.feed.reconnect()
-        t.audit.record("KOTAK_RECONNECT", {"tokens": list(found)}, user["username"])
-        return ok({"login": result, "tokens": found})
+        t.audit.record("LIVE_SESSION_RECONNECT", {"provider": live.provider, "tokens": list(found)}, user["username"])
+        return ok({"provider": live.provider, "login": result, "tokens": found})
+
+    @app.get("/api/broker/zerodha/login-url")
+    async def zerodha_login_url(user: dict = Depends(require("admin"))):
+        live = _live(T())
+        if live.provider != "zerodha":
+            raise ValueError("PROVIDER_IS_NOT_ZERODHA")
+        return ok({"login_url": live.login_url()})
+
+    class ZerodhaSessionBody(BaseModel):
+        request_token: str
+
+    @app.post("/api/broker/zerodha/session")
+    async def zerodha_session(body: ZerodhaSessionBody, user: dict = Depends(require("admin"))):
+        t = T()
+        live = _live(t)
+        if live.provider != "zerodha":
+            raise ValueError("PROVIDER_IS_NOT_ZERODHA")
+        result = await live.exchange_request_token(body.request_token.strip())
+        found = await live.resolve_index_tokens(t.universe.all(), include_vix=True)
+        if t.feed.name == "zerodha_kite":
+            await t.feed.reconnect()
+        t.audit.record("ZERODHA_SESSION_CREATED", {"user_id": result.get("user_id")}, user["username"])
+        return ok({**result, "tokens": found})
 
     # ------------------------------------------------------------------ websocket
     @app.websocket("/ws")

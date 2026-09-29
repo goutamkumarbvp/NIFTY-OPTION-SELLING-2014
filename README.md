@@ -25,7 +25,7 @@ Point `DATA_SOURCE=kotak` / `BROKER=kotak|zerodha` at real accounts when ready.
 | **Agent council** (9 agents) | MarketAnalyst · VolatilityAgent · OptionsFlow · EventRisk · Sentinel · RiskGuardian · StrategySelector · ExecutionTactician · PostTradeReviewer, plus an optional LLM **narrator** (Claude) that explains decisions and never trades. |
 | **Strategies** | Short straddle, delta strangle, iron condor, iron fly, bull-put / bear-call credit spreads, jade lizard. Entry, stop-loss, target, trailing lock, square-off, delta-based adjustments. |
 | **Risk manager** | Pre-trade gates on every order (gate, kill switch, session, lots, positions, per-market lots, margin, daily loss, feed freshness, LIVE interlock) and a 1-second portfolio monitor that **halts and flattens** on breach. |
-| **Execution** | Paper broker with bid/ask crossing, slippage and full Indian option charges; Kotak Neo and Zerodha Kite live adapters (fail closed without credentials). |
+| **Execution** | Paper broker with bid/ask crossing, slippage and full Indian option charges; Kotak Neo and Zerodha Kite live data + order adapters (fail closed without credentials). |
 | **Markets** | NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY (NSE) · SENSEX, BANKEX (BSE) · CRUDEOIL, NATURALGAS, GOLD, SILVER (MCX) with correct expiry weekdays and sessions. |
 | **Ops** | SQLite persistence, tamper-evident audit trail, alerts to dashboard / Telegram / e-mail, health monitor, feed supervisor with auto-reconnect, role-based auth. |
 
@@ -106,6 +106,35 @@ the nearest future) and real option quotes (LTP, OI, volume, IV) polled from
 max-pain are computed from live prices. Trading stays on the **paper broker**
 until you also set `TRADING_ENV=LIVE`, `LIVE_TRADING=true`,
 `LIVE_ORDERS_ENABLED=true` and `BROKER=kotak`.
+
+## Connecting your Zerodha account (second broker option)
+
+Kite Connect issues a fresh access token every trading day through a browser
+login, so the flow is: configure once, log in each morning.
+
+1. `python -m pip install -r requirements-zerodha.txt`
+2. Create a Kite Connect app at developers.kite.trade and put its key and
+   secret in `.env`:
+   ```text
+   DATA_SOURCE=zerodha
+   ZERODHA_API_KEY=...
+   ZERODHA_API_SECRET=...
+   ```
+3. Each morning run `python scripts/zerodha_login.py`. It prints the Kite
+   login URL; after you log in, paste the `request_token` from the redirect
+   URL. The script exchanges it for today's access token and stores it in
+   `runtime/zerodha_session.json` and `.env`. The same login is available in
+   the terminal's *System* panel (**Open Kite login** → paste token →
+   **Create session**).
+4. `python scripts/zerodha_check.py` verifies the profile, instrument
+   resolution, option quotes and 15 s of ticks; then `python -m terminal`.
+
+What flows from Zerodha: index / futures ticks over KiteTicker (full mode)
+and option quotes (LTP, OI, volume, bid/ask) for the strikes in the active
+chain, resolved from the daily instrument dump. Live orders use
+`BROKER=zerodha` behind the same triple interlock. `DATA_SOURCE` and `BROKER`
+must name the same provider; one live session is shared by feed, quotes and
+orders.
 
 ## Running
 

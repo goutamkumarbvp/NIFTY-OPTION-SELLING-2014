@@ -291,3 +291,108 @@ class KotakNeoFeed(MarketFeed):
         base = super().status()
         base.update({"session": self.session.status(), "market_status": self.market_status, "reconnects": self.reconnects})
         return base
+
+
+class ZerodhaFeed(MarketFeed):
+    """Zerodha Kite live feed (KiteTicker WebSocket, bridged from its thread into asyncio).
+
+    Indices stream from NSE/BSE, MCX underlyings as the nearest future. The
+    ticker owns its own reconnect logic; ``reconnect()`` re-subscribes rather
+    than restarting the (non-restartable) reactor thread.
+    """
+
+    name = "zerodha_kite"
+
+    def __init__(self, universe: List[Underlying], session) -> None:
+        super().__init__()
+        self.universe = universe
+        self.session = session
+        self._ticker = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._token_map: Dict[int, str] = {}
+        self.reconnects = 0
+        self.socket_connected = False
+
+    async def start(self) -> None:
+        if self._ticker is not None:
+            return
+        await self.session.connect()
+        found = await self.session.resolve_index_tokens(self.universe, include_vix=True)
+        if not found:
+            raise RuntimeError("ZERODHA_NO_INSTRUMENT_TOKENS_RESOLVED")
+        self._token_map = {int(v["token"]): sym for sym, v in found.items()}
+        self._loop = asyncio.get_running_loop()
+        from terminal.market.zerodha import tick_from_kite
+        ticker = self.session.ticker()
+        tokens = list(self._token_map)
+
+        def on_connect(ws, response):
+            self.socket_connected = True
+            self.connected = True
+            ws.subscribe(tokens)
+            ws.set_mode(ws.MODE_FULL, tokens)
+
+        def on_ticks(ws, ticks):
+            for t in ticks:
+                f = tick_from_kite(t)
+                if not f:
+                    continue
+                sym = self._token_map.get(f["token"])
+                if sym is None:
+                    continue
+                tick = Tick(symbol=sym, ltp=f["ltp"], change_pct=round(f["change_pct"], 2), open=f["open"], high=f["high"], low=f["low"], prev_close=f["prev_close"], volume=f["volume"])
+                if self._loop and not self._loop.is_closed():
+                    asyncio.run_coroutine_threadsafe(self._emit(tick), self._loop)
+
+        def on_close(ws, code, reason):
+            self.socket_connected = False
+            self.connected = False
+            log.warning("zerodha ticker closed: %s %s", code, reason)
+
+        def on_error(ws, code, reason):
+            self.errors += 1
+            log.warning("zerodha ticker error: %s %s", code, reason)
+
+        def on_reconnect(ws, attempts):
+            self.reconnects += 1
+
+        ticker.on_connect = on_connect
+        ticker.on_ticks = on_ticks
+        ticker.on_close = on_close
+        ticker.on_error = on_error
+        ticker.on_reconnect = on_reconnect
+        ticker.connect(threaded=True)
+        self._ticker = ticker
+        self.connected = True  # optimistic until the socket reports
+        log.info("Zerodha Kite feed starting for %s", ", ".join(found))
+
+    async def stop(self) -> None:
+        self.connected = False
+        if self._ticker is not None:
+            try:
+                self._ticker.close()
+            except Exception:
+                pass
+            try:
+                self._ticker.stop()
+            except Exception:
+                pass
+        self._ticker = None
+
+    async def reconnect(self) -> None:
+        self.reconnects += 1
+        if self._ticker is None:
+            await self.start()
+            return
+        try:
+            if self._ticker.is_connected():
+                self._ticker.resubscribe()
+                self.connected = True
+        except Exception as exc:
+            self.errors += 1
+            log.warning("zerodha resubscribe failed: %s", exc)
+
+    def status(self) -> dict:
+        base = super().status()
+        base.update({"session": self.session.status(), "socket_connected": self.socket_connected, "reconnects": self.reconnects})
+        return base
