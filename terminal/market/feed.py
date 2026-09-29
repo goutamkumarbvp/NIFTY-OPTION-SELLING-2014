@@ -396,3 +396,96 @@ class ZerodhaFeed(MarketFeed):
         base = super().status()
         base.update({"session": self.session.status(), "socket_connected": self.socket_connected, "reconnects": self.reconnects})
         return base
+
+
+class AngelOneFeed(MarketFeed):
+    """Angel One SmartAPI feed (SmartWebSocketV2 in SNAP_QUOTE mode, run in a thread)."""
+
+    name = "angel_smartapi"
+
+    def __init__(self, universe: List[Underlying], session) -> None:
+        super().__init__()
+        self.universe = universe
+        self.session = session
+        self._ws = None
+        self._thread = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._token_map: Dict[str, str] = {}
+        self.reconnects = 0
+
+    async def start(self) -> None:
+        if self._ws is not None:
+            return
+        await self.session.connect()
+        found = await self.session.resolve_index_tokens(self.universe, include_vix=True)
+        if not found:
+            raise RuntimeError("ANGEL_NO_INSTRUMENT_TOKENS_RESOLVED")
+        self._token_map = {str(v["token"]): sym for sym, v in found.items()}
+        self._loop = asyncio.get_running_loop()
+        from terminal.market.angel import WS_EXCHANGE_TYPE, tick_from_smart
+        groups: Dict[int, List[str]] = {}
+        for v in found.values():
+            groups.setdefault(WS_EXCHANGE_TYPE.get(str(v["exchange"]).upper(), 1), []).append(str(v["token"]))
+        token_list = [{"exchangeType": k, "tokens": toks} for k, toks in groups.items()]
+        ws = self.session.websocket()
+        feed = self
+
+        def on_open(wsapp):
+            feed.connected = True
+            ws.subscribe("aiterm", ws.SNAP_QUOTE, token_list)
+
+        def on_data(wsapp, message):
+            f = tick_from_smart(message) if isinstance(message, dict) else None
+            if not f:
+                return
+            sym = feed._token_map.get(f["token"])
+            if sym is None:
+                return
+            tick = Tick(symbol=sym, ltp=f["ltp"], change_pct=round(f["change_pct"], 2), open=f["open"], high=f["high"], low=f["low"], prev_close=f["prev_close"], volume=f["volume"])
+            if feed._loop and not feed._loop.is_closed():
+                asyncio.run_coroutine_threadsafe(feed._emit(tick), feed._loop)
+
+        def on_error(wsapp=None, error=None):
+            feed.errors += 1
+            log.warning("angel ws error: %s", error)
+
+        def on_close(wsapp=None):
+            feed.connected = False
+
+        ws.on_open, ws.on_data, ws.on_error, ws.on_close = on_open, on_data, on_error, on_close
+        import threading
+        self._ws = ws
+        self._thread = threading.Thread(target=self._run_ws, name="angel-ws", daemon=True)
+        self._thread.start()
+        self.connected = True
+        log.info("Angel One feed starting for %s", ", ".join(found))
+
+    def _run_ws(self) -> None:
+        try:
+            self._ws.connect()
+        except Exception as exc:
+            self.errors += 1
+            self.connected = False
+            log.warning("angel ws thread ended: %s", exc)
+
+    async def stop(self) -> None:
+        self.connected = False
+        if self._ws is not None:
+            try:
+                self._ws.close_connection()
+            except Exception:
+                pass
+        self._ws = None
+        self._thread = None
+
+    async def reconnect(self) -> None:
+        self.reconnects += 1
+        await self.stop()
+        if not self.session.authenticated:
+            await self.session.connect()
+        await self.start()
+
+    def status(self) -> dict:
+        base = super().status()
+        base.update({"session": self.session.status(), "reconnects": self.reconnects})
+        return base

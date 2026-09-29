@@ -125,3 +125,58 @@ class ZerodhaBroker(Broker):
         base = super().status()
         base["session"] = self.session.status()
         return base
+
+
+class AngelOneBroker(Broker):
+    name = "angel"
+    live = True
+
+    def __init__(self, settings, session, universe) -> None:
+        super().__init__()
+        self.s = settings
+        self.session = session
+        self.universe = universe
+
+    async def connect(self) -> None:
+        await self.session.connect()
+        self.connected = True
+
+    async def place(self, order: Order, quote_lookup: QuoteLookup) -> Order:
+        if not self.session.authenticated:
+            raise RuntimeError("BROKER_NOT_CONNECTED")
+        u = self.universe.get(order.underlying)
+        scrip = await self.session.resolve_option(u, order.expiry, order.strike, order.option_type)
+        if not scrip:
+            order.status = OrderStatus.REJECTED
+            order.message = "ANGEL_TRADING_SYMBOL_NOT_FOUND"
+            return order
+        params = {"variety": "NORMAL", "tradingsymbol": scrip["trading_symbol"], "symboltoken": str(scrip["token"]), "transactiontype": "BUY" if order.side == Side.BUY else "SELL",
+                  "exchange": scrip["exchange"], "ordertype": "LIMIT" if order.order_type == OrderType.LIMIT else "MARKET", "producttype": "CARRYFORWARD", "duration": "DAY",
+                  "price": str(order.limit_price or 0), "squareoff": "0", "stoploss": "0", "quantity": str(order.quantity), "ordertag": "AITERM"}
+        oid = await self.session._call("placeOrder", params)
+        order.broker_order_id = str(oid or "")
+        order.status = OrderStatus.OPEN if order.broker_order_id else OrderStatus.REJECTED
+        order.message = f"ANGEL_ORDER:{order.broker_order_id}"
+        order.updated_at = time.time()
+        return order
+
+    async def cancel(self, order: Order) -> Order:
+        if order.broker_order_id:
+            await self.session._call("cancelOrder", order.broker_order_id, "NORMAL")
+            order.status = OrderStatus.CANCELLED
+            order.updated_at = time.time()
+        return order
+
+    async def margins(self) -> Dict[str, float]:
+        try:
+            m = await self.session.margins()
+            data = (m or {}).get("data") or {}
+            return {"available": float(data.get("net") or data.get("availablecash") or 0), "raw": m}
+        except Exception as exc:
+            self.last_error = str(exc)
+            return {}
+
+    def status(self) -> dict:
+        base = super().status()
+        base["session"] = self.session.status()
+        return base

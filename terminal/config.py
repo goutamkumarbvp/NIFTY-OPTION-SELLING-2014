@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     manual_confirmation_for_agent_orders: bool = Field(True, alias="MANUAL_CONFIRMATION_FOR_AGENT_ORDERS")
 
     # --- market data -------------------------------------------------------
-    data_source: str = Field("simulated", alias="DATA_SOURCE")  # simulated | kotak | zerodha
+    data_source: str = Field("simulated", alias="DATA_SOURCE")  # simulated | kotak | zerodha | angel
     markets: str = Field("NSE,BSE,MCX", alias="MARKETS")
     sim_speed: float = Field(1.0, alias="SIM_SPEED")  # simulation time multiplier
     sim_always_open: bool = Field(True, alias="SIM_ALWAYS_OPEN")  # keep simulated market open 24x7
@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     feed_stale_seconds: float = Field(8.0, alias="FEED_STALE_SECONDS")
 
     # --- broker ------------------------------------------------------------
-    broker: str = Field("paper", alias="BROKER")  # paper | kotak | zerodha
+    broker: str = Field("paper", alias="BROKER")  # paper | kotak | zerodha | angel
     neo_consumer_key: str = Field("", alias="NEO_CONSUMER_KEY")
     neo_mobile_number: str = Field("", alias="NEO_MOBILE_NUMBER")
     neo_ucc: str = Field("", alias="NEO_UCC")
@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     zerodha_api_secret: str = Field("", alias="ZERODHA_API_SECRET")
     zerodha_access_token: str = Field("", alias="ZERODHA_ACCESS_TOKEN")
     zerodha_request_token: str = Field("", alias="ZERODHA_REQUEST_TOKEN")
+    angel_api_key: str = Field("", alias="ANGEL_API_KEY")
+    angel_client_code: str = Field("", alias="ANGEL_CLIENT_CODE")
+    angel_pin: str = Field("", alias="ANGEL_PIN")
+    angel_totp_secret: str = Field("", alias="ANGEL_TOTP_SECRET")
     live_chain_poll_seconds: float = Field(4.0, alias="LIVE_CHAIN_POLL_SECONDS")
     live_chain_underlyings: str = Field("", alias="LIVE_CHAIN_UNDERLYINGS")  # blank = council focus list
 

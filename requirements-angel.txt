@@ -1,0 +1,5 @@
+-r requirements.txt
+smartapi-python>=1.4
+pyotp>=2.9
+logzero>=1.7
+websocket-client>=1.6
