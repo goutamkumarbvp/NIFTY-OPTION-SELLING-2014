@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -86,8 +86,8 @@ class Settings(BaseSettings):
     naked_short_allowed: bool = Field(True, alias="NAKED_SHORT_ALLOWED")
 
     # --- strategy schedule -----------------------------------------------
-    terminal_start_time: str = Field("09:00", alias="TERMINAL_START_TIME")  # terminal operating window (IST)
-    terminal_end_time: str = Field("23:30", alias="TERMINAL_END_TIME")      # everything still open is squared off here
+    terminal_start_time: str = Field("09:00", validation_alias=AliasChoices("TERMINAL_START_TIME", "ENTRY_START", "START_TIME"))  # operating window (IST)
+    terminal_end_time: str = Field("23:30", validation_alias=AliasChoices("TERMINAL_END_TIME", "EXIT_TIME", "END_TIME"))  # everything still open is squared off here
     exit_retry_seconds: float = Field(10.0, alias="EXIT_RETRY_SECONDS")     # re-send an unfilled square-off every N seconds
     exit_max_attempts: int = Field(60, alias="EXIT_MAX_ATTEMPTS")
     reconcile_seconds: float = Field(60.0, alias="RECONCILE_SECONDS")       # broker position / margin reconciliation interval
