@@ -133,6 +133,9 @@ class Settings(BaseSettings):
     guardian_auto_apply: str = Field("none", alias="GUARDIAN_AUTO_APPLY")  # none | low | medium | all  (flatten always needs approval)
     guardian_approval_ttl_seconds: float = Field(900.0, alias="GUARDIAN_APPROVAL_TTL_SECONDS")
     guardian_llm_diagnosis: bool = Field(True, alias="GUARDIAN_LLM_DIAGNOSIS")  # Claude root-cause note when LLM_ENABLED
+    vapid_public_key: str = Field("", alias="VAPID_PUBLIC_KEY")      # Web Push for the installed PWA (scripts/generate_vapid.py)
+    vapid_private_key: str = Field("", alias="VAPID_PRIVATE_KEY")
+    vapid_subject: str = Field("mailto:operator@localhost", alias="VAPID_SUBJECT")
     telegram_bot_token: str = Field("", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field("", alias="TELEGRAM_CHAT_ID")
     telegram_commands_enabled: bool = Field(True, alias="TELEGRAM_COMMANDS_ENABLED")

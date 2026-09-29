@@ -198,6 +198,16 @@ python -m pytest -q                # test-suite
 
 Interactive API docs: `http://127.0.0.1:8600/api/docs`.
 
+## Phone app (PWA)
+
+The dashboard is an installable Progressive Web App. Run the terminal on a PC or a small
+VPS behind HTTPS (Caddy / nginx), open it on the phone and choose **Install app** (Android)
+or **Share → Add to Home Screen** (iPhone). It opens full-screen with its own icon, a
+bottom navigation bar, cached shell for instant start, and WARNING / CRITICAL alerts as
+device notifications. For notifications while the app is closed, generate VAPID keys with
+`python scripts/generate_vapid.py`, put them in `.env`, then tap **Enable notifications**
+in Settings. The engine itself always runs on the server; the phone is the control screen.
+
 ## Testing the safety controls
 
 The test suite drives the whole terminal through a scripted feed (`tests/fakefeed.py`)

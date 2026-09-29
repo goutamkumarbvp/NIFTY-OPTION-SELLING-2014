@@ -8,5 +8,7 @@ anthropic>=0.40
 # Kotak Neo is the default live data provider (the terminal is live-data only)
 kotakneoapi==3.0.6
 pyotp>=2.9
+# Web Push notifications for the installed PWA (optional at runtime, needs VAPID keys)
+pywebpush>=2.0
 
 # Other providers: requirements-zerodha.txt / requirements-angel.txt

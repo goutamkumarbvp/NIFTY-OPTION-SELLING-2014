@@ -58,7 +58,7 @@ function connectWS() {
   setInterval(() => { if (ws.readyState === 1) ws.send('ping'); }, 20000);
 }
 function onEvent(topic, p) {
-  if (topic === 'alert' && p && p.level !== 'INFO') toast(`${p.level}: ${p.title}`, p.level === 'CRITICAL' ? 'err' : '');
+  if (topic === 'alert' && p && p.level !== 'INFO') { toast(`${p.level}: ${p.title}`, p.level === 'CRITICAL' ? 'err' : ''); localNotify(p); }
   if (topic === 'plan.proposed') toast('Council proposed a trade — see Approvals', 'ok');
   if (topic === 'order.filled') toast(`Filled ${p.side} ${p.lots}L ${p.symbol} @ ${p.filled_price}`, 'ok');
   if (topic === 'log' && S.view === 'system') { S.logs.unshift(p); S.logs = S.logs.slice(0, 400); renderLogs(); }
@@ -87,7 +87,7 @@ function renderChrome(s) {
   $('#sb-broker').textContent = s.broker.name + (s.broker.connected ? '' : ' ✕'); $('#sb-broker').className = s.broker.connected ? 'ok' : 'bad';
   $('#sb-council').textContent = `cycle ${s.council.cycle}${s.council.busy ? ' ⟳' : ''}`;
   $('#sb-clock').textContent = new Date().toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' });
-  const pend = s.pending_plans.length + s.pending_orders.length + ((s.guardian && s.guardian.pending) || 0) + ((s.governance && s.governance.pending.length) || 0); const nb = $('#nav-approvals'); nb.textContent = pend; nb.classList.toggle('hidden', !pend);
+  const pend = s.pending_plans.length + s.pending_orders.length + ((s.guardian && s.guardian.pending) || 0) + ((s.governance && s.governance.pending.length) || 0); const nb = $('#nav-approvals'); nb.textContent = pend; nb.classList.toggle('hidden', !pend); const mb = $('#mnav-approvals'); if (mb) { mb.textContent = pend; mb.classList.toggle('hidden', !pend); }
   $('#ticker').innerHTML = [`<span>VIX<b class="${s.vix && s.vix.change_pct >= 0 ? 'down' : 'up'}">${s.vix ? s.vix.ltp.toFixed(2) : '—'}</b></span>`].concat(s.market.map(m => `<span>${m.symbol}<b class="${m.change_pct >= 0 ? 'up' : 'down'}">${fmt(m.ltp, 1)} ${pct(m.change_pct)}</b></span>`)).join('');
 }
 
@@ -104,9 +104,11 @@ $('#btn-kill').onclick = async () => {
   if (await confirmModal('<h3 style="color:#f43f5e">ENGAGE KILL SWITCH?</h3><p>Cancels all working orders, flattens every position at market, closes the safety gate and forces MANUAL mode.</p>')) await act(() => api('/api/safety/kill', 'POST'), 'KILL SWITCH ENGAGED');
 };
 $('#nav').onclick = e => { const a = e.target.closest('a'); if (!a) return; switchView(a.dataset.view); };
+$('#mnav').onclick = e => { const a = e.target.closest('a'); if (!a) return; switchView(a.dataset.view); };
 function switchView(name) {
-  S.view = name; $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === name)); $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
-  const v = views[name]; if (v.activate) v.activate(); if (S.snap && v.render) v.render(S.snap);
+  S.view = name; $$('#nav a, #mnav a').forEach(a => a.classList.toggle('active', a.dataset.view === name)); $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+  try { history.replaceState(null, '', '/?view=' + name); } catch (_) { }
+  const v = views[name]; if (v.activate) { try { const r = v.activate(); if (r && r.catch) r.catch(() => { }); } catch (_) { } } if (S.snap && v.render) v.render(S.snap);
 }
 
 // ------------------------------------------------------------------ shared renderers
@@ -336,15 +338,60 @@ views.system = {
 function renderLogs() { const el = $('#sy-logs'); if (el) el.innerHTML = S.logs.map(l => `<div class="l ${l.level}"><span>${ts(l.ts)}</span><span>${l.level}</span><span>${esc(l.source)}</span><span>${esc(l.message)}</span></div>`).join(''); }
 
 views.settings = {
-  mount() { $('#view-settings').innerHTML = `<div class="grid g-1-2"><div class="card"><h3>Trading schedule (IST)</h3><div class="form"><label>Terminal start<input id="sc-tstart"></label><label>Terminal end (square-off)<input id="sc-tend"></label><label>Entry from<input id="sc-start"></label><label>Entry until<input id="sc-end"></label><label>Square-off<input id="sc-sq"></label><label>MCX square-off<input id="sc-mcx"></label></div><div class="row" style="margin-top:10px"><button class="btn primary" id="sc-save">Save</button></div><div class="hr"></div><h3>Event calendar (no-trade windows)</h3><textarea id="ev-json" rows="6" style="font-family:var(--mono)"></textarea><div class="row" style="margin-top:8px"><button class="btn" id="ev-save">Save events</button><button class="btn ghost" id="al-test">Send test alert</button></div></div><div class="card"><h3>Configuration (from .env, secrets masked)</h3><div class="log scroll tall" id="se-conf"></div></div></div>`;
+  mount() { $('#view-settings').innerHTML = `<div class="grid g-1-2"><div class="card"><h3>Trading schedule (IST)</h3><div class="form"><label>Terminal start<input id="sc-tstart"></label><label>Terminal end (square-off)<input id="sc-tend"></label><label>Entry from<input id="sc-start"></label><label>Entry until<input id="sc-end"></label><label>Square-off<input id="sc-sq"></label><label>MCX square-off<input id="sc-mcx"></label></div><div class="row" style="margin-top:10px"><button class="btn primary" id="sc-save">Save</button></div><div class="hr"></div><h3>Event calendar (no-trade windows)</h3><textarea id="ev-json" rows="6" style="font-family:var(--mono)"></textarea><div class="row" style="margin-top:8px"><button class="btn" id="ev-save">Save events</button><button class="btn ghost" id="al-test">Send test alert</button></div><div class="hr"></div><h3>Phone app &amp; notifications</h3><div id="pwa-status"></div><div class="row" style="margin-top:8px"><button class="btn primary" id="pwa-notify">Enable notifications</button><button class="btn" id="pwa-install">Install app</button><button class="btn ghost" id="pwa-push-test">Test push</button></div><div class="muted" style="font-size:11px;margin-top:6px">Install from the browser menu (Android: "Install app", iPhone: Share → Add to Home Screen). WARNING and CRITICAL alerts become device notifications; with VAPID keys on the server they arrive even when the app is closed.</div></div><div class="card"><h3>Configuration (from .env, secrets masked)</h3><div class="log scroll tall" id="se-conf"></div></div></div>`;
     $('#sc-save').onclick = () => act(() => api('/api/schedule', 'POST', { terminal_start_time: $('#sc-tstart').value, terminal_end_time: $('#sc-tend').value, entry_window_start: $('#sc-start').value, entry_window_end: $('#sc-end').value, square_off_time: $('#sc-sq').value, mcx_square_off_time: $('#sc-mcx').value }), 'Schedule saved');
     $('#ev-save').onclick = () => { try { act(() => api('/api/agents/events', 'POST', { events: JSON.parse($('#ev-json').value) }), 'Events saved'); } catch (e) { toast('Invalid JSON', 'err'); } };
     $('#al-test').onclick = () => act(() => api('/api/alerts/test', 'POST'), 'Test alert sent');
+    $('#pwa-notify').onclick = () => enableNotifications(); $('#pwa-install').onclick = () => { if (PWA.deferred) $('#install-btn').click(); else toast('Use the browser menu: Install app / Add to Home Screen', ''); }; $('#pwa-push-test').onclick = () => act(() => api('/api/push/test', 'POST'), 'Push test sent');
   },
-  async activate() { S.settings = await api('/api/settings'); const sc = S.snap.scheduler; $('#sc-tstart').value = sc.operating_window[0]; $('#sc-tend').value = sc.operating_window[1]; $('#sc-start').value = sc.entry_window[0]; $('#sc-end').value = sc.entry_window[1]; $('#sc-sq').value = sc.square_off; $('#sc-mcx').value = sc.mcx_square_off; $('#se-conf').innerHTML = Object.entries(S.settings.settings).map(([k, v]) => `<div class="l" style="grid-template-columns:260px 1fr"><span>${k}</span><span class="muted">${esc(String(v))}</span></div>`).join('') + `<div class="l" style="grid-template-columns:260px 1fr"><span>auth</span><span class="muted">${esc(JSON.stringify(S.settings.auth))}</span></div>`; if (!$('#ev-json').value) $('#ev-json').value = JSON.stringify([{ date: '2026-10-01', name: 'RBI MPC decision', impact: 'HIGH' }], null, 1); },
+  async activate() { renderPushStatus(); if (!S.snap) return; S.settings = await api('/api/settings'); const sc = S.snap.scheduler; $('#sc-tstart').value = sc.operating_window[0]; $('#sc-tend').value = sc.operating_window[1]; $('#sc-start').value = sc.entry_window[0]; $('#sc-end').value = sc.entry_window[1]; $('#sc-sq').value = sc.square_off; $('#sc-mcx').value = sc.mcx_square_off; $('#se-conf').innerHTML = Object.entries(S.settings.settings).map(([k, v]) => `<div class="l" style="grid-template-columns:260px 1fr"><span>${k}</span><span class="muted">${esc(String(v))}</span></div>`).join('') + `<div class="l" style="grid-template-columns:260px 1fr"><span>auth</span><span class="muted">${esc(JSON.stringify(S.settings.auth))}</span></div>`; if (!$('#ev-json').value) $('#ev-json').value = JSON.stringify([{ date: '2026-10-01', name: 'RBI MPC decision', impact: 'HIGH' }], null, 1); },
   render() { },
 };
 
 function mountAll() { Object.values(views).forEach(v => v.mount && v.mount()); }
 setInterval(() => { if (S.snap) $('#sb-clock').textContent = new Date().toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' }); }, 1000);
 boot();
+
+
+// ------------------------------------------------------------------ PWA: install, service worker, notifications, web push
+const PWA = { deferred: null, reg: null };
+function localNotify(p) {
+  if (!('Notification' in window) || Notification.permission !== 'granted' || document.visibilityState === 'visible') return;
+  const opts = { body: p.body || '', icon: '/static/icons/icon-192.png', tag: `${p.level}:${p.category}`, requireInteraction: p.level === 'CRITICAL', data: { url: '/?view=' + ({ guardian: 'approvals', governance: 'approvals', council: 'approvals', risk: 'risk', trade: 'trading', exit: 'trading', feed: 'system' }[p.category] || 'overview') } };
+  if (PWA.reg) PWA.reg.showNotification(`${p.level}: ${p.title}`, opts); else try { new Notification(`${p.level}: ${p.title}`, opts); } catch (_) { }
+}
+function urlB64ToU8(b64) { const pad = '='.repeat((4 - b64.length % 4) % 4); const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from([...raw].map(c => c.charCodeAt(0))); }
+async function enableNotifications() {
+  if (!('Notification' in window)) { toast('Notifications are not supported in this browser', 'err'); return; }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') { toast('Notification permission denied', 'err'); return; }
+  toast('Notifications enabled on this device', 'ok');
+  try {
+    const cfg = await api('/api/push/config');
+    if (cfg.enabled && cfg.public_key && PWA.reg && 'pushManager' in PWA.reg) {
+      const sub = await PWA.reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToU8(cfg.public_key) });
+      const j = sub.toJSON();
+      await api('/api/push/subscribe', 'POST', { endpoint: j.endpoint, keys: j.keys, expirationTime: j.expirationTime, ua: navigator.userAgent });
+      toast('Push subscribed: alerts arrive even when the app is closed', 'ok');
+    } else if (!cfg.keys_configured) toast('Push keys not configured on the server (VAPID); in-app notifications only', '');
+  } catch (e) { toast('Push subscription failed: ' + e.message, 'err'); }
+  renderPushStatus();
+}
+async function renderPushStatus() {
+  const el = $('#pwa-status'); if (!el) return;
+  let cfg = null; try { cfg = await api('/api/push/config'); } catch (_) { }
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  el.innerHTML = `<div class="kv"><span>Installed as app</span><b class="${standalone ? 'ok' : ''}">${standalone ? 'yes' : 'no — use Install / Add to Home Screen'}</b></div><div class="kv"><span>Service worker</span><b class="${PWA.reg ? 'ok' : 'bad'}">${PWA.reg ? 'active (offline shell cached)' : 'not registered'}</b></div><div class="kv"><span>Notification permission</span><b class="${Notification.permission === 'granted' ? 'ok' : ''}">${'Notification' in window ? Notification.permission : 'unsupported'}</b></div><div class="kv"><span>Web push (server)</span><b class="${cfg && cfg.enabled ? 'ok' : ''}">${cfg ? (cfg.enabled ? `enabled · ${cfg.subscriptions} device(s) · ${cfg.sent} sent` : (cfg.library ? 'VAPID keys not set (python scripts/generate_vapid.py)' : 'pywebpush not installed')) : '—'}</b></div>`;
+}
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); PWA.deferred = e; if (!localStorage.getItem('pwa_dismissed')) $('#install-banner').classList.remove('hidden'); });
+window.addEventListener('appinstalled', () => { $('#install-banner').classList.add('hidden'); toast('AI Terminal installed', 'ok'); });
+$('#install-btn').onclick = async () => { if (PWA.deferred) { PWA.deferred.prompt(); await PWA.deferred.userChoice; PWA.deferred = null; } $('#install-banner').classList.add('hidden'); };
+$('#install-dismiss').onclick = () => { localStorage.setItem('pwa_dismissed', '1'); $('#install-banner').classList.add('hidden'); };
+(function pwaInit() {
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  if (isIOS && !standalone && !localStorage.getItem('pwa_dismissed')) { $('#install-hint').textContent = 'iPhone: tap Share → "Add to Home Screen".'; $('#install-btn').classList.add('hidden'); $('#install-banner').classList.remove('hidden'); }
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').then(r => { PWA.reg = r; renderPushStatus(); }).catch(() => { });
+  const v = new URLSearchParams(location.search).get('view');
+  if (v && views[v]) setTimeout(() => switchView(v), 0);
+})();

@@ -2,7 +2,14 @@
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AI Terminal">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
 <title>NIFTY AI Options Terminal</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230b1220'/><path d='M20 70 L40 45 L55 58 L80 28' stroke='%2322d3ee' stroke-width='9' fill='none' stroke-linecap='round'/></svg>">
 <link rel="stylesheet" href="/static/styles.css">
@@ -19,6 +26,7 @@
   </div>
 </div>
 
+<div id="install-banner" class="install hidden"><div><b>Install AI Terminal on this phone</b><small id="install-hint">Full-screen app with its own icon. Alerts arrive as notifications.</small></div><button class="btn primary sm" id="install-btn">Install</button><button class="btn sm" id="install-dismiss">Later</button></div>
 <div id="shell" class="shell">
   <aside class="sidebar">
     <div class="brand"><span class="logo"></span><div><b>AI OPTIONS<br>TERMINAL</b><small id="version">v30</small></div></div>
@@ -80,6 +88,14 @@
       <div id="view-settings" class="view"></div>
     </section>
   </main>
+  <nav id="mnav" class="mnav">
+    <a data-view="overview" class="active"><i>◈</i><span>Home</span></a>
+    <a data-view="chain"><i>≣</i><span>Chain</span></a>
+    <a data-view="approvals"><i>✓</i><span>Approve</span><b id="mnav-approvals" class="badge hidden">0</b></a>
+    <a data-view="trading"><i>⇄</i><span>Positions</span></a>
+    <a data-view="risk"><i>⛨</i><span>Risk</span></a>
+    <a data-view="system"><i>⚙</i><span>More</span></a>
+  </nav>
 </div>
 <div id="toasts" class="toasts"></div>
 <div id="modal" class="modal hidden"><div class="modal-card"><div id="modal-body"></div><div class="modal-actions"><button id="modal-cancel" class="btn">Cancel</button><button id="modal-ok" class="btn danger">Confirm</button></div></div></div>

@@ -51,6 +51,15 @@ class AlertEngine:
             except Exception as exc:
                 self.delivery_stats["telegram_failed"] += 1
                 log.warning("telegram delivery failed: %s", exc)
+        push = getattr(self.t, "push", None)
+        if push is not None and push.enabled:
+            try:
+                view = {"guardian": "approvals", "governance": "approvals", "council": "approvals", "risk": "risk", "trade": "trading", "exit": "trading", "feed": "system"}.get(alert.category, "overview")
+                res = await push.send(alert.title, alert.body, alert.level, alert.category, view)
+                self.delivery_stats["push_sent"] = self.delivery_stats.get("push_sent", 0) + res["sent"]
+                self.delivery_stats["push_failed"] = self.delivery_stats.get("push_failed", 0) + res["failed"]
+            except Exception as exc:
+                log.warning("web push delivery failed: %s", exc)
         if self.channels["email"] and alert.level == "CRITICAL":
             try:
                 await asyncio.get_running_loop().run_in_executor(None, self._send_email, alert.title, text)
