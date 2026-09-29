@@ -1,0 +1,25 @@
+{
+  "name": "NIFTY AI Options Terminal",
+  "short_name": "AI Terminal",
+  "description": "Agent-driven options trading terminal: NSE, BSE, MCX. Live data, risk controls, Guardian self-healing.",
+  "id": "/",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "lang": "en",
+  "categories": ["finance", "business"],
+  "icons": [
+    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/static/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Approvals", "url": "/?view=approvals", "description": "Guardian and council approvals" },
+    { "name": "Risk Control", "url": "/?view=risk" },
+    { "name": "Positions", "url": "/?view=trading" }
+  ]
+}

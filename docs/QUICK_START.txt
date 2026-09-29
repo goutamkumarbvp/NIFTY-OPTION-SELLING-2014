@@ -48,3 +48,10 @@ GUARDIAN (self-healing)
   waits for YOUR permission (Approvals panel, or Telegram: /heal approve <id>).
   Set GUARDIAN_AUTO_APPLY=low to let it apply low-risk remedies (reconnect,
   restart loop, pause entries) on its own. Flatten always asks.
+
+PHONE APP (PWA)
+  Run the terminal on a PC/VPS with HTTPS, open it on your phone and tap
+  "Install app" (Android) or Share -> "Add to Home Screen" (iPhone).
+  Settings -> "Enable notifications" turns WARNING/CRITICAL alerts into phone
+  notifications. For alerts while the app is closed: python scripts/generate_vapid.py,
+  paste the keys into .env, restart, then enable notifications again.

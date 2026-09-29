@@ -38,6 +38,7 @@ from terminal.monitoring.health import HealthMonitor
 from terminal.monitoring.latency import LatencyTracker
 from terminal.monitoring.metrics import Metrics
 from terminal.notifications.alerts import AlertEngine
+from terminal.notifications.push import WebPush
 from terminal.notifications.telegram import TelegramCommands
 from terminal.risk.manager import RiskManager
 from terminal.risk.portfolio import PortfolioRisk
@@ -119,6 +120,7 @@ class Terminal:
         self.journal = Journal(self)
         self.metrics = Metrics(self)
         self.telegram = TelegramCommands(self)
+        self.push = WebPush(self)
         self.health = HealthMonitor(self)
         self.guardian = GuardianAgent(self)
         self.backups = BackupManager(self)
@@ -620,7 +622,7 @@ class Terminal:
             "agents": [a.status() for a in self.council.agents], "briefs": self.council.last_brief, "llm": self.council.llm.status()},
             "alerts": [a.model_dump(mode="json") for a in self.alerts.recent[-15:][::-1]], "scheduler": self.scheduler.describe(), "exits": self.exit_guard.describe(),
             "reconcile": {"orders": self.order_reconciler.describe(), "positions": self.position_reconciler.describe(), "stream": self.stream_stats, "recovery": self.recovery},
-            "copilot": self.copilot.status(), "model": self.entry_model.describe(), "telegram": self.telegram.status(), "pnl": self.pnl_summary(),
+            "copilot": self.copilot.status(), "model": self.entry_model.describe(), "telegram": self.telegram.status(), "push": self.push.describe(), "pnl": self.pnl_summary(),
             "guardian": self.guardian.describe(20), "governance": self.governance.describe(), "data_quality": self.dq.describe(), "latency": self.latency.stats(),
             "tca": self.tca.summary(), "attribution": self.attribution.describe(), "backups": self.backups.describe(),
         }
