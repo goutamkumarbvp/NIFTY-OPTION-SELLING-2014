@@ -1,15 +1,15 @@
 import pytest
 
 from terminal.core.models import OptionType, Side
-from terminal.market.chain import OptionChainBuilder
 from terminal.market.universe import Universe
 from terminal.strategy.library import SPECS, build_legs, estimate_margin, net_credit_per_lot, payoff_profile
+from tests.fakefeed import live_chain
 
 
 @pytest.fixture
 def chain(tmp_path):
     u = Universe(tmp_path, ["NSE"]).get("NIFTY")
-    return u, OptionChainBuilder(seed=2).build(u, 24800, 13.5, "2026-10-06")
+    return u, live_chain(u, 24800, 13.5, "2026-10-06")
 
 
 @pytest.mark.parametrize("key", list(SPECS))

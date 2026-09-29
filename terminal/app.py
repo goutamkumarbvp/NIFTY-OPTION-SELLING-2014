@@ -8,13 +8,16 @@ from typing import Dict, List, Set
 
 from terminal import PRODUCT, __version__
 from terminal.agents.copilot import Copilot
+from terminal.agents.guardian import GuardianAgent
 from terminal.agents.journal import Journal
 from terminal.agents.orchestrator import Council
 from terminal.analytics.evaluation import CouncilEvaluator
 from terminal.analytics.models import EntryQualityModel
+from terminal.analytics.tca import PnLAttribution, TransactionCostAnalysis
 from terminal.config import Settings, get_settings
 from terminal.core.audit import AuditLog
 from terminal.core.bus import EventBus
+from terminal.core.governance import Governance
 from terminal.core.models import OptionChain, OptionQuote, OrderSource, TerminalMode, Tick, TradingEnv
 from terminal.execution.brokers.base import Broker
 from terminal.execution.brokers.live import AngelOneBroker, KotakNeoBroker, ZerodhaBroker
@@ -25,16 +28,21 @@ from terminal.execution.positions import PositionManager
 from terminal.execution.reconcile import OrderReconciler, PositionReconciler
 from terminal.market.angel import AngelOneSession
 from terminal.market.chain import OptionChainBuilder
-from terminal.market.feed import AngelOneFeed, KotakNeoFeed, MarketFeed, SimulatedFeed, ZerodhaFeed
+from terminal.market.feed import AngelOneFeed, KotakNeoFeed, MarketFeed, ZerodhaFeed
 from terminal.market.kotak import KotakNeoSession
 from terminal.market.processor import MarketDataProcessor
+from terminal.market.quality import DataQualityMonitor
 from terminal.market.universe import VIX_SYMBOL, Universe
 from terminal.market.zerodha import ZerodhaSession
 from terminal.monitoring.health import HealthMonitor
+from terminal.monitoring.latency import LatencyTracker
 from terminal.monitoring.metrics import Metrics
 from terminal.notifications.alerts import AlertEngine
 from terminal.notifications.telegram import TelegramCommands
 from terminal.risk.manager import RiskManager
+from terminal.risk.portfolio import PortfolioRisk
+from terminal.risk.pretrade import PreTradeControls
+from terminal.storage.backup import BackupManager
 from terminal.storage.db import Database
 from terminal.strategy.engine import StrategyEngine
 from terminal.strategy.scheduler import Scheduler
@@ -43,7 +51,8 @@ log = logging.getLogger("terminal")
 
 
 class Terminal:
-    def __init__(self, settings: Settings | None = None, seed: int | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, feed: MarketFeed | None = None) -> None:
+        """`feed` lets the test harness inject a scripted feed; production always uses the live provider."""
         self.settings = settings or get_settings()
         s = self.settings
         s.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -51,8 +60,8 @@ class Terminal:
         self.audit = AuditLog(s.runtime_dir / "audit.jsonl")
         self.db = Database(s.runtime_dir / "terminal.sqlite3")
         self.universe = Universe(s.runtime_dir, s.market_list)
-        self.processor = MarketDataProcessor()
-        self.chain_builder = OptionChainBuilder(seed=seed if seed is not None else int(time.time()) % 100000)
+        self.processor = MarketDataProcessor(candle_seconds=int(s.candle_seconds))
+        self.chain_builder = OptionChainBuilder()
         self.chains: Dict[str, OptionChain] = {}
         self._quotes: Dict[str, OptionQuote] = {}
         self.mode = TerminalMode(self.db.get_setting("terminal_mode", s.terminal_mode))
@@ -65,10 +74,11 @@ class Terminal:
         self.loop_lag_ms = 0.0
         self.ws_clients: Set = set()
         self.started_at = time.time()
+        self.dq = DataQualityMonitor(s, s.runtime_dir)
+        self.latency = LatencyTracker(s)
         # feeds & broker: one live broker session (Kotak Neo or Zerodha Kite) shared by feed, chain poller and broker
         self.live = None  # KotakNeoSession | ZerodhaSession | None
         providers = {s.data_source.lower()} | ({s.broker.lower()} if self.env == TradingEnv.LIVE else set())
-        providers.discard("simulated")
         providers.discard("paper")
         if len(providers) > 1:
             raise RuntimeError(f"ONE_LIVE_PROVIDER_ONLY: DATA_SOURCE and BROKER must agree ({sorted(providers)})")
@@ -81,10 +91,12 @@ class Terminal:
         elif providers:
             raise RuntimeError(f"UNKNOWN_LIVE_PROVIDER: {sorted(providers)}")
         self.live_chain_stats = {"polls": 0, "quotes": 0, "errors": 0, "last_ts": 0.0, "last_error": ""}
-        self.feed: MarketFeed = self._make_feed(seed)
+        self.feed: MarketFeed = feed if feed is not None else self._make_feed()
+        self._tick_eval_last: Dict[str, float] = {}
+        self._tick_eval_pending = False
         self.broker: Broker = self._make_broker()
         # services
-        self.scheduler = Scheduler(s, sim_always_open=(s.data_source == "simulated" and s.sim_always_open))
+        self.scheduler = Scheduler(s)
         self.alerts = AlertEngine(self)
         self.positions = PositionManager(self)
         self.orders = OrderManager(self)
@@ -95,6 +107,10 @@ class Terminal:
         self.stream_stats = {"subscribed": 0, "quotes": 0, "last_ts": 0.0}
         self.recovery: Dict[str, int] = {}
         self._eod_done_day = ""
+        self.pretrade = PreTradeControls(self)
+        self.portfolio_risk = PortfolioRisk(self)
+        self.tca = TransactionCostAnalysis(self)
+        self.attribution = PnLAttribution(self)
         self.risk = RiskManager(self)
         self.entry_model = EntryQualityModel(self.db)
         self.evaluator = CouncilEvaluator(self)
@@ -104,15 +120,21 @@ class Terminal:
         self.metrics = Metrics(self)
         self.telegram = TelegramCommands(self)
         self.health = HealthMonitor(self)
+        self.guardian = GuardianAgent(self)
+        self.backups = BackupManager(self)
+        self.governance = Governance(self)
+        self._register_governed_actions()
+        self.heartbeats: Dict[str, float] = {}
+        self._loop_tasks: Dict[str, asyncio.Task] = {}
         self._tasks: List[asyncio.Task] = []
         self._stop = asyncio.Event()
-        self._chain_refresh_seconds = 2.0 if s.data_source == "simulated" else 3.0
+        self._chain_refresh_seconds = 2.0
         self.feed.on_tick(self._on_tick)
         self.feed.on_option_quote(self._on_option_quote)
         self.audit.record("TERMINAL_INIT", {"version": __version__, "mode": self.mode.value, "env": self.env.value, "data_source": s.data_source, "broker": self.broker.name})
 
     # ------------------------------------------------------------- factories
-    def _make_feed(self, seed: int | None) -> MarketFeed:
+    def _make_feed(self) -> MarketFeed:
         s = self.settings
         if s.data_source.lower() == "kotak":
             return KotakNeoFeed(self.universe.all(), self.live)
@@ -120,7 +142,7 @@ class Terminal:
             return ZerodhaFeed(self.universe.all(), self.live)
         if s.data_source.lower() == "angel":
             return AngelOneFeed(self.universe.all(), self.live)
-        return SimulatedFeed(self.universe.all(), interval=s.tick_interval_seconds, speed=s.sim_speed, always_open=s.sim_always_open, seed=seed)
+        raise RuntimeError(f"UNKNOWN_DATA_SOURCE:{s.data_source} (live-only: kotak | zerodha | angel)")
 
     def _make_broker(self) -> Broker:
         s = self.settings
@@ -147,21 +169,92 @@ class Terminal:
             self.log("CRITICAL", "feed", f"feed start failed: {exc}")
             await self.alerts.emit("CRITICAL", "feed", "Market feed failed to start", str(exc))
         self._stop = asyncio.Event()
-        self._tasks = [asyncio.create_task(self._chain_loop(), name="chain-loop"), asyncio.create_task(self._risk_loop(), name="risk-loop"),
-                       asyncio.create_task(self._council_loop(), name="council-loop"), asyncio.create_task(self._broadcast_loop(), name="broadcast-loop"),
-                       asyncio.create_task(self._feed_supervisor(), name="feed-supervisor")]
-        if self.live is not None:
-            self._tasks.append(asyncio.create_task(self._live_chain_loop(), name="live-chain-poller"))
-            self._tasks.append(asyncio.create_task(self._stream_loop(), name="option-stream"))
-        if getattr(self.broker, "live", False):
-            self._tasks.append(asyncio.create_task(self._reconcile_loop(), name="reconcile-loop"))
-        self._tasks.append(asyncio.create_task(self._learning_loop(), name="learning-loop"))
+        self.heartbeats = {}
+        self._loop_tasks = {name: asyncio.create_task(fn(), name=name) for name, (fn, _) in self.loop_specs().items()}
+        self._tasks = list(self._loop_tasks.values())
         if self.telegram.enabled:
             self._tasks.append(asyncio.create_task(self.telegram.run(), name="telegram-commands"))
         if self.recovery.get("runs_exiting"):
             asyncio.create_task(self.strategies.resume_exits())
         self.engine_running = True
         self.log("INFO", "terminal", f"{PRODUCT} v{__version__} started: mode={self.mode.value} env={self.env.value} feed={self.feed.name} broker={self.broker.name}")
+
+    def _register_governed_actions(self) -> None:
+        async def limits(payload, actor):
+            return self.risk.update_limits(payload.get("limits", {}), actor)
+
+        async def mode_auto(payload, actor):
+            await self.set_mode(TerminalMode.AUTO, actor, reason=payload.get("reason", "governed"))
+            return self.mode.value
+
+        async def gate_open(payload, actor):
+            self.risk.set_gate(True, actor)
+            return "OPEN"
+
+        async def guardian_policy(payload, actor):
+            self.guardian.auto_apply = payload["auto_apply"]
+            self.db.config_change("guardian.auto_apply", None, payload["auto_apply"], actor)
+            self.audit.record("GUARDIAN_POLICY", {"auto_apply": payload["auto_apply"]}, actor)
+            return payload["auto_apply"]
+
+        self.governance.register("risk_limits", limits)
+        self.governance.register("mode_auto", mode_auto)
+        self.governance.register("gate_open", gate_open)
+        self.governance.register("guardian_policy", guardian_policy)
+
+    async def _backup_loop(self) -> None:
+        await asyncio.sleep(20.0)
+        while not self._stop.is_set():
+            self.beat("backup-loop")
+            try:
+                if self.backups.due():
+                    res = self.backups.run("scheduled")
+                    if not res["ok"]:
+                        self.log("WARNING", "backup", f"backup failed: {res['error']}")
+                self.dq.flush()
+            except Exception:
+                log.exception("backup loop error")
+            await asyncio.sleep(30.0)
+
+    def loop_specs(self) -> Dict[str, tuple]:
+        """Supervised loops: name -> (coroutine factory, expected heartbeat period in seconds). The Guardian
+        watches each heartbeat and can restart a loop (with the operator's permission) if it stalls or crashes."""
+        s = self.settings
+        specs: Dict[str, tuple] = {"chain-loop": (self._chain_loop, 2.0), "risk-loop": (self._risk_loop, 1.0), "council-loop": (self._council_loop, float(s.agent_cycle_seconds)),
+                                   "broadcast-loop": (self._broadcast_loop, 1.0), "feed-supervisor": (self._feed_supervisor, 5.0), "learning-loop": (self._learning_loop, 30.0)}
+        if self.live is not None:
+            specs["live-chain-poller"] = (self._live_chain_loop, float(s.live_chain_poll_seconds))
+            specs["option-stream"] = (self._stream_loop, 10.0)
+        if getattr(self.broker, "live", False):
+            specs["reconcile-loop"] = (self._reconcile_loop, 2.0)
+        if self.guardian.enabled:
+            specs["guardian-loop"] = (self.guardian.run, float(s.guardian_interval_seconds))
+        specs["backup-loop"] = (self._backup_loop, 30.0)
+        return specs
+
+    def loop_task(self, name: str) -> asyncio.Task | None:
+        return self._loop_tasks.get(name)
+
+    def beat(self, name: str) -> None:
+        self.heartbeats[name] = time.time()
+
+    async def restart_loop(self, name: str) -> None:
+        spec = self.loop_specs().get(name)
+        if spec is None:
+            raise KeyError(f"UNKNOWN_LOOP:{name}")
+        old = self._loop_tasks.get(name)
+        if old is not None and not old.done():
+            old.cancel()
+            try:
+                await old
+            except (asyncio.CancelledError, Exception):
+                pass
+        task = asyncio.create_task(spec[0](), name=name)
+        self._loop_tasks[name] = task
+        self._tasks = [t for t in self._tasks if t is not old] + [task]
+        self.beat(name)
+        self.audit.record("LOOP_RESTARTED", {"loop": name}, "guardian")
+        self.log("WARNING", "terminal", f"loop '{name}' restarted")
 
     async def stop(self) -> None:
         self._stop.set()
@@ -174,6 +267,7 @@ class Terminal:
             except (asyncio.CancelledError, Exception):
                 pass
         await self.feed.stop()
+        self.dq.flush()
         self.db.close()
 
     # ------------------------------------------------------------- recovery
@@ -195,18 +289,43 @@ class Terminal:
             log.exception("recovery failed")
 
     async def _on_option_quote(self, symbol: str, fields: Dict) -> None:
+        """Every streamed option update is applied immediately: quote overlay, position mark,
+        and (throttled per symbol) stop-loss / target evaluation — no waiting for the 2 s chain loop."""
         q = {"ltp": fields.get("ltp", 0)}
         for k in ("oi", "volume", "bid", "ask", "oi_change"):
             if fields.get(k) is not None:
                 q[k] = fields[k]
+        if self.dq.validate(symbol, float(q["ltp"] or 0), bid=float(q.get("bid") or 0), ask=float(q.get("ask") or 0), is_option=True) is not None:
+            return
+        t_eval = time.perf_counter()
+        self.dq.record("O", symbol, q)
         self.chain_builder.apply_broker_quotes({symbol: q})
         self.stream_stats["quotes"] += 1
         self.stream_stats["last_ts"] = time.time()
+        pos = self.positions.positions.get(symbol)
+        if pos is None or not q["ltp"]:
+            return
+        quote = self._quotes.get(symbol)
+        if quote is not None:
+            quote.ltp = float(q["ltp"])
+            quote.live = True
+        pos.ltp = float(q["ltp"])
+        pos.unrealized_pnl = round((pos.ltp - pos.avg_price) * pos.net_qty, 2)
+        now = time.time()
+        if now - self._tick_eval_last.get(symbol, 0.0) >= self.settings.tick_eval_min_interval_ms / 1000.0 and not self._tick_eval_pending:
+            self._tick_eval_last[symbol] = now
+            self._tick_eval_pending = True
+            try:
+                await self.strategies.monitor()
+                self.latency.observe("quote_to_eval", (time.perf_counter() - t_eval) * 1000)
+            finally:
+                self._tick_eval_pending = False
 
     async def _stream_loop(self) -> None:
         """Keep held and near-ATM option contracts subscribed on the live WebSocket."""
         await asyncio.sleep(8.0)
         while not self._stop.is_set():
+            self.beat("option-stream")
             try:
                 if self.live.authenticated:
                     wanted: Dict[str, tuple] = {}
@@ -239,6 +358,7 @@ class Terminal:
     async def _learning_loop(self) -> None:
         """Score council decisions after their horizon and train the entry-quality model."""
         while not self._stop.is_set():
+            self.beat("learning-loop")
             await asyncio.sleep(30.0)
             try:
                 scored = self.evaluator.score_pending()
@@ -252,6 +372,7 @@ class Terminal:
         await asyncio.sleep(3.0)
         n = 0
         while not self._stop.is_set():
+            self.beat("reconcile-loop")
             try:
                 await self.order_reconciler.tick()
                 if n % max(1, int(self.settings.reconcile_seconds / 2)) == 0:
@@ -307,11 +428,17 @@ class Terminal:
 
     # ------------------------------------------------------------- loops
     async def _on_tick(self, tick: Tick) -> None:
+        if self.dq.validate(tick.symbol, tick.ltp, tick.ts) is not None:
+            return
+        t0 = time.perf_counter()
         self.processor.push(tick)
+        self.dq.record("T", tick.symbol, {"p": tick.ltp, "c": tick.change_pct})
+        self.latency.observe("tick_to_mark", (time.perf_counter() - t0) * 1000)
 
     async def _chain_loop(self) -> None:
         while not self._stop.is_set():
             t0 = time.perf_counter()
+            self.beat("chain-loop")
             try:
                 vix = self.processor.last_price(VIX_SYMBOL) or 13.0
                 for u in self.universe.all():
@@ -342,6 +469,7 @@ class Terminal:
                             self._quotes[r.ce.symbol] = r.ce
                             self._quotes[r.pe.symbol] = r.pe
                 self.positions.mark(self.quote)
+                self.attribution.update()
                 await self.strategies.monitor()
             except Exception:
                 log.exception("chain loop error")
@@ -352,6 +480,7 @@ class Terminal:
         """Poll real option quotes from the live broker and overlay them on the model chain."""
         await asyncio.sleep(5.0)
         while not self._stop.is_set():
+            self.beat("live-chain-poller")
             if self.live.missing_credentials() or not self.live.authenticated:
                 await asyncio.sleep(30.0)
                 continue
@@ -379,6 +508,7 @@ class Terminal:
 
     async def _risk_loop(self) -> None:
         while not self._stop.is_set():
+            self.beat("risk-loop")
             try:
                 await self.risk.evaluate()
                 await self.exit_guard.tick()
@@ -405,13 +535,19 @@ class Terminal:
             self.log("INFO", "journal", f"daily journal written: P&L ₹{entry['pnl']:,.0f}, {entry['trades']} trades")
         except Exception:
             log.exception("journal write failed")
+        self.dq.flush()
+        res = self.backups.run("eod")
+        self.log("INFO" if res["ok"] else "WARNING", "backup", f"end-of-day backup: {res}")
 
     async def _council_loop(self) -> None:
         await asyncio.sleep(3.0)
         while not self._stop.is_set():
+            self.beat("council-loop")
             try:
                 if not self.paused and self.chains and self.scheduler.in_operating_window():
+                    done = self.latency.timer("council_cycle")
                     await self.council.run_cycle()
+                    done()
             except Exception:
                 log.exception("council loop error")
             await asyncio.sleep(self.settings.agent_cycle_seconds)
@@ -419,6 +555,7 @@ class Terminal:
     async def _feed_supervisor(self) -> None:
         failures = 0
         while not self._stop.is_set():
+            self.beat("feed-supervisor")
             await asyncio.sleep(5.0)
             try:
                 if self.feed.last_tick_ts and not self.feed.is_fresh(self.settings.feed_stale_seconds * 3):
@@ -436,6 +573,7 @@ class Terminal:
     async def _broadcast_loop(self) -> None:
         import json
         while not self._stop.is_set():
+            self.beat("broadcast-loop")
             await asyncio.sleep(1.0)
             if not self.ws_clients:
                 continue
@@ -473,7 +611,7 @@ class Terminal:
         vix = self.processor.last_tick(VIX_SYMBOL)
         return {
             "ts": time.time(), "product": PRODUCT, "version": __version__, "mode": self.mode.value, "env": self.env.value, "engine_running": self.engine_running, "paused": self.paused,
-            "live_allowed": self.settings.live_allowed, "feed": self.feed.status(), "broker": self.broker.status(), "data_source": self.settings.data_source,
+            "live_allowed": self.settings.live_allowed, "feed": self.feed.status(), "broker": self.broker.status(), "data_source": self.settings.data_source, "candle_seconds": self.processor.candle_seconds,
             "live_session": {**self.live.status(), "chain": self.live_chain_stats} if self.live else None, "vix": {"ltp": vix.ltp, "change_pct": vix.change_pct} if vix else None,
             "market": self.market_overview(), "risk": self.risk.describe(), "positions": self.positions.snapshot(), "orders": self.orders.recent(60),
             "pending_orders": [o.model_dump(mode="json") for o in self.orders.pending_approval()], "runs": [r.model_dump(mode="json") for r in self.strategies.runs.values() if r.status != "CLOSED"],
@@ -483,6 +621,8 @@ class Terminal:
             "alerts": [a.model_dump(mode="json") for a in self.alerts.recent[-15:][::-1]], "scheduler": self.scheduler.describe(), "exits": self.exit_guard.describe(),
             "reconcile": {"orders": self.order_reconciler.describe(), "positions": self.position_reconciler.describe(), "stream": self.stream_stats, "recovery": self.recovery},
             "copilot": self.copilot.status(), "model": self.entry_model.describe(), "telegram": self.telegram.status(), "pnl": self.pnl_summary(),
+            "guardian": self.guardian.describe(20), "governance": self.governance.describe(), "data_quality": self.dq.describe(), "latency": self.latency.stats(),
+            "tca": self.tca.summary(), "attribution": self.attribution.describe(), "backups": self.backups.describe(),
         }
 
 

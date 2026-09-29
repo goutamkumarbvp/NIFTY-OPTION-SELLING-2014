@@ -131,3 +131,9 @@ async def test_outside_operating_window_blocks_entries_and_squares_off(terminal)
     assert not t.positions.open_positions()
     d = (await t.council.run_cycle(["NIFTY"], force=True))[0]
     assert d.decision in ("AVOID", "VETO")
+
+
+def test_operating_window_accepts_operator_key_names(tmp_path):
+    from terminal.config import Settings
+    s = Settings(_env_file=None, RUNTIME_DIR=str(tmp_path), ENTRY_START="09:05", EXIT_TIME="23:25")
+    assert (s.terminal_start_time, s.terminal_end_time) == ("09:05", "23:25")

@@ -9,9 +9,9 @@ from terminal.core.models import Exchange, Underlying
 
 
 class Scheduler:
-    def __init__(self, settings, sim_always_open: bool = False) -> None:
+    def __init__(self, settings) -> None:
         self.s = settings
-        self.sim_always_open = sim_always_open
+        self.assume_open = False  # test harness only: treat every session as open
         self.overrides: Dict[str, str] = {}
 
     def _t(self, key: str) -> dt.time:
@@ -19,7 +19,7 @@ class Scheduler:
 
     def session(self, u: Underlying, now: dt.datetime | None = None) -> str:
         now = now or now_ist()
-        if self.sim_always_open:
+        if self.assume_open:
             return "OPEN"
         return session_state(now, u.session_open, u.session_close)
 
@@ -29,7 +29,7 @@ class Scheduler:
             return False, "OUTSIDE_OPERATING_HOURS"
         if self.session(u, now) != "OPEN":
             return False, "SESSION_CLOSED"
-        if self.sim_always_open:
+        if self.assume_open:
             return True, "OK"
         t = now.time()
         if u.exchange == Exchange.MCX:
@@ -55,7 +55,7 @@ class Scheduler:
 
     def must_square_off(self, u: Underlying, now: dt.datetime | None = None) -> bool:
         now = now or now_ist()
-        if self.sim_always_open:
+        if self.assume_open:
             return False
         t = now.time()
         cutoff = self._t("mcx_square_off_time") if u.exchange == Exchange.MCX else self._t("square_off_time")
@@ -75,5 +75,5 @@ class Scheduler:
             "entry_window": [self.overrides.get("entry_window_start", self.s.entry_window_start), self.overrides.get("entry_window_end", self.s.entry_window_end)],
             "square_off": self.overrides.get("square_off_time", self.s.square_off_time),
             "mcx_square_off": self.overrides.get("mcx_square_off_time", self.s.mcx_square_off_time),
-            "sim_always_open": self.sim_always_open,
+            "sessions": {u.symbol: self.session(u) for u in []},
         }

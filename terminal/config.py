@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,13 +38,12 @@ class Settings(BaseSettings):
     protect_in_manual: bool = Field(True, alias="PROTECT_IN_MANUAL")  # sentinel may flatten in MANUAL
     manual_confirmation_for_agent_orders: bool = Field(True, alias="MANUAL_CONFIRMATION_FOR_AGENT_ORDERS")
 
-    # --- market data -------------------------------------------------------
-    data_source: str = Field("simulated", alias="DATA_SOURCE")  # simulated | kotak | zerodha | angel
+    # --- market data (live only) -------------------------------------------
+    data_source: str = Field("kotak", alias="DATA_SOURCE")  # kotak | zerodha | angel
     markets: str = Field("NSE,BSE,MCX", alias="MARKETS")
-    sim_speed: float = Field(1.0, alias="SIM_SPEED")  # simulation time multiplier
-    sim_always_open: bool = Field(True, alias="SIM_ALWAYS_OPEN")  # keep simulated market open 24x7
-    tick_interval_seconds: float = Field(1.0, alias="TICK_INTERVAL_SECONDS")
     feed_stale_seconds: float = Field(8.0, alias="FEED_STALE_SECONDS")
+    candle_seconds: int = Field(60, alias="CANDLE_SECONDS")  # indicator candle size; ticks are consumed at full resolution regardless
+    tick_eval_min_interval_ms: int = Field(100, alias="TICK_EVAL_MIN_INTERVAL_MS")  # stop-loss re-evaluation throttle per symbol
 
     # --- broker ------------------------------------------------------------
     broker: str = Field("paper", alias="BROKER")  # paper | kotak | zerodha | angel
@@ -86,8 +85,8 @@ class Settings(BaseSettings):
     naked_short_allowed: bool = Field(True, alias="NAKED_SHORT_ALLOWED")
 
     # --- strategy schedule -----------------------------------------------
-    terminal_start_time: str = Field("09:00", alias="TERMINAL_START_TIME")  # terminal operating window (IST)
-    terminal_end_time: str = Field("23:30", alias="TERMINAL_END_TIME")      # everything still open is squared off here
+    terminal_start_time: str = Field("09:00", validation_alias=AliasChoices("TERMINAL_START_TIME", "ENTRY_START", "START_TIME"))  # operating window (IST)
+    terminal_end_time: str = Field("23:30", validation_alias=AliasChoices("TERMINAL_END_TIME", "EXIT_TIME", "END_TIME"))  # everything still open is squared off here
     exit_retry_seconds: float = Field(10.0, alias="EXIT_RETRY_SECONDS")     # re-send an unfilled square-off every N seconds
     exit_max_attempts: int = Field(60, alias="EXIT_MAX_ATTEMPTS")
     reconcile_seconds: float = Field(60.0, alias="RECONCILE_SECONDS")       # broker position / margin reconciliation interval
@@ -111,6 +110,29 @@ class Settings(BaseSettings):
     decision_score_minutes: int = Field(30, alias="DECISION_SCORE_MINUTES")  # horizon for council evaluation
 
     # --- notifications -----------------------------------------------------
+    # --- institutional controls ----------------------------------------------
+    dq_max_underlying_jump_pct: float = Field(8.0, alias="DQ_MAX_UNDERLYING_JUMP_PCT")   # tick outlier gate (held until confirmed)
+    dq_max_option_jump_pct: float = Field(60.0, alias="DQ_MAX_OPTION_JUMP_PCT")
+    dq_stale_timestamp_seconds: float = Field(30.0, alias="DQ_STALE_TIMESTAMP_SECONDS")
+    tick_recording: bool = Field(True, alias="TICK_RECORDING")                          # runtime/ticks/YYYY-MM-DD.jsonl.gz journal
+    slo_tick_to_mark_ms: float = Field(50.0, alias="SLO_TICK_TO_MARK_MS")
+    slo_quote_to_eval_ms: float = Field(150.0, alias="SLO_QUOTE_TO_EVAL_MS")
+    slo_order_fill_ms: float = Field(3000.0, alias="SLO_ORDER_FILL_MS")
+    slo_council_cycle_ms: float = Field(8000.0, alias="SLO_COUNCIL_CYCLE_MS")
+    backup_dir: str = Field("", alias="BACKUP_DIR")                                       # blank = RUNTIME_DIR/backups
+    backup_keep: int = Field(14, alias="BACKUP_KEEP")
+    backup_interval_minutes: float = Field(30.0, alias="BACKUP_INTERVAL_MINUTES")        # 0 = only at end of day
+    four_eyes_required: bool | None = Field(None, alias="FOUR_EYES_REQUIRED")          # default: on when TRADING_ENV=LIVE
+    session_ttl_hours: float = Field(12.0, alias="SESSION_TTL_HOURS")
+    login_lockout_attempts: int = Field(5, alias="LOGIN_LOCKOUT_ATTEMPTS")
+    login_lockout_minutes: float = Field(15.0, alias="LOGIN_LOCKOUT_MINUTES")
+
+    # --- guardian (self-monitoring / self-healing; asks for permission by default) ---
+    guardian_enabled: bool = Field(True, alias="GUARDIAN_ENABLED")
+    guardian_interval_seconds: float = Field(5.0, alias="GUARDIAN_INTERVAL_SECONDS")
+    guardian_auto_apply: str = Field("none", alias="GUARDIAN_AUTO_APPLY")  # none | low | medium | all  (flatten always needs approval)
+    guardian_approval_ttl_seconds: float = Field(900.0, alias="GUARDIAN_APPROVAL_TTL_SECONDS")
+    guardian_llm_diagnosis: bool = Field(True, alias="GUARDIAN_LLM_DIAGNOSIS")  # Claude root-cause note when LLM_ENABLED
     telegram_bot_token: str = Field("", alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: str = Field("", alias="TELEGRAM_CHAT_ID")
     telegram_commands_enabled: bool = Field(True, alias="TELEGRAM_COMMANDS_ENABLED")
@@ -126,6 +148,22 @@ class Settings(BaseSettings):
         v = v.strip().upper()
         if v not in {"MANUAL", "AUTO"}:
             raise ValueError("TERMINAL_MODE must be MANUAL or AUTO")
+        return v
+
+    @field_validator("data_source")
+    @classmethod
+    def _source(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in {"kotak", "zerodha", "angel"}:
+            raise ValueError("DATA_SOURCE must be kotak, zerodha or angel (the terminal is live-data only)")
+        return v
+
+    @field_validator("guardian_auto_apply")
+    @classmethod
+    def _guardian_policy(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in {"none", "low", "medium", "all"}:
+            raise ValueError("GUARDIAN_AUTO_APPLY must be none, low, medium or all")
         return v
 
     @field_validator("trading_env")

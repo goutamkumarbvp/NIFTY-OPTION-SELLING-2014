@@ -1,26 +1,21 @@
-import asyncio
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from terminal.api.app import create_app
-from terminal.app import Terminal
-from tests.conftest import make_settings
+from tests.conftest import make_settings, make_terminal, wait_live
 
 
 @pytest.fixture
 def app_and_terminal():
-    t = Terminal(settings=make_settings(), seed=11)
+    t = make_terminal(make_settings(), seed=11)
     return create_app(t), t
 
 
 async def test_api_end_to_end(app_and_terminal):
     app, t = app_and_terminal
     async with app.router.lifespan_context(app):
-        for _ in range(50):
-            await asyncio.sleep(0.1)
-            if t.chains:
-                break
+        await wait_live(t)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             r = await c.get("/api/health")
             assert r.status_code == 200 and r.json()["data"]["engine_running"]
@@ -55,7 +50,7 @@ async def test_api_end_to_end(app_and_terminal):
 
 
 async def test_auth_roles_enforced():
-    t = Terminal(settings=make_settings(BIND_HOST="0.0.0.0", TERMINAL_USERS="admin:secret:admin,view:pw:viewer,trd:pw:trader"), seed=3)
+    t = make_terminal(make_settings(BIND_HOST="0.0.0.0", TERMINAL_USERS="admin:secret:admin,view:pw:viewer,trd:pw:trader"), seed=3)
     app = create_app(t)
     async with app.router.lifespan_context(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

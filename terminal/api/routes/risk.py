@@ -21,4 +21,17 @@ async def risk(request: Request, user: dict = Depends(require("viewer"))):
 
 @router.post("/limits")
 async def risk_limits(body: LimitsBody, request: Request, user: dict = Depends(require("admin"))):
-    return ok(terminal(request).risk.update_limits(body.limits, user["username"]))
+    t = terminal(request)
+    res = await t.governance.submit("risk_limits", {"limits": body.limits}, user["username"])
+    return ok(res["result"] if res["applied"] else {"pending_approval": res["request"], "limits": t.risk.limits})
+
+
+@router.get("/stress")
+async def risk_stress(request: Request, user: dict = Depends(require("viewer"))):
+    t = terminal(request)
+    return ok(t.portfolio_risk.stress())
+
+
+@router.get("/pretrade")
+async def risk_pretrade(request: Request, user: dict = Depends(require("viewer"))):
+    return ok(terminal(request).pretrade.describe())

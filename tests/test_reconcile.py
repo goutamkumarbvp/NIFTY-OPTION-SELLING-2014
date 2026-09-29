@@ -4,6 +4,7 @@ import asyncio
 from terminal.core.models import OrderSource, OrderStatus, Side
 from terminal.execution.brokers.paper import PaperBroker
 from terminal.market.feed import MarketFeed
+from tests.conftest import make_terminal
 
 
 class FakeLiveBroker(PaperBroker):
@@ -123,7 +124,6 @@ async def test_position_reconciler_detects_and_adopts(terminal):
 
 
 async def test_restart_recovery_restores_positions_orders_and_runs(terminal):
-    from terminal.app import Terminal
     t = terminal
     plan = t.strategies.make_plan("short_strangle", "NIFTY", 1, source=OrderSource.MANUAL)
     run = await t.strategies.deploy(plan, "tester", OrderSource.MANUAL)
@@ -135,7 +135,7 @@ async def test_restart_recovery_restores_positions_orders_and_runs(terminal):
     working = await t.orders.submit(t.orders.build(q.symbol, Side.SELL, 1, OrderSource.MANUAL), "trader")
     assert working.status == OrderStatus.OPEN
     await t.stop()
-    t2 = Terminal(settings=t.settings, seed=9)
+    t2 = make_terminal(t.settings, seed=9)
     await t2.start()
     try:
         assert {p.symbol: p.net_qty for p in t2.positions.open_positions()} == symbols
@@ -189,8 +189,13 @@ async def test_option_stream_subscriptions_and_quote_overlay(terminal):
     hit = await t.live.resolve_option(t.universe.get("NIFTY"), ch.expiry, atm.strike, atm.ce.option_type)
     n = await feed.subscribe_options([{"symbol": atm.ce.symbol, "token": hit["token"], "segment": "nse_fo"}])
     assert n == 1 and feed.streamed_options() == 1
+    before = t.stream_stats["quotes"]
+    rejected_before = t.dq.by_reason.get("PRICE_JUMP", 0)
     await feed._emit_option(atm.ce.symbol, {"ltp": 999.5, "oi": 777, "volume": 5})
-    assert t.stream_stats["quotes"] == 1
+    # a +400% print is held by the data-quality gate until a second update confirms it
+    assert t.stream_stats["quotes"] == before and t.dq.by_reason["PRICE_JUMP"] == rejected_before + 1
+    await feed._emit_option(atm.ce.symbol, {"ltp": 999.5, "oi": 777, "volume": 5})
+    assert t.stream_stats["quotes"] == before + 1
     rebuilt = t.chain_builder.build(t.universe.get("NIFTY"), ch.spot, 13.0, ch.expiry)
     assert rebuilt.find(atm.strike, atm.ce.option_type).ltp == 999.5
     assert rebuilt.find(atm.strike, atm.ce.option_type).oi == 777

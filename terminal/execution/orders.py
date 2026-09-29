@@ -119,8 +119,12 @@ class OrderManager:
         return order
 
     async def _execute(self, order: Order, actor: str) -> Order:
+        self.t.tca.on_submit(order)
+        self.t.pretrade.record_sent(order)
+        t0 = time.perf_counter()
         try:
             order = await self.t.broker.place(order, self.t.quote)
+            self.t.latency.observe("order_submit_to_ack", (time.perf_counter() - t0) * 1000)
         except Exception as exc:
             order.status = OrderStatus.REJECTED
             order.message = f"BROKER_ERROR:{exc}"
@@ -128,6 +132,8 @@ class OrderManager:
         self._persist(order)
         if order.status == OrderStatus.FILLED:
             self.trades_today += 1
+            self.t.tca.on_fill(order)
+            self.t.latency.observe("order_submit_to_fill", (time.perf_counter() - t0) * 1000)
             pos = self.t.positions.apply_fill(order)
             self.t.db.add_fill(order.id, order.symbol, order.side.value, order.filled_qty, order.filled_price or 0.0, order.charges, order.strategy_run_id, order.source.value)
             self.t.audit.record("ORDER_FILLED", order.model_dump(mode="json"), actor)
@@ -158,6 +164,8 @@ class OrderManager:
             order.filled_qty = filled_qty
             if prev_units == 0:
                 self.trades_today += 1
+            self.t.tca.on_fill(order, price=avg_price, qty=new_units)
+            self.t.latency.observe("order_submit_to_fill", (time.time() - order.created_at) * 1000)
             pos = self.t.positions.apply_fill(order, qty_units=new_units, price=avg_price, charges=charges)
             self.t.db.add_fill(order.id, order.symbol, order.side.value, new_units, avg_price, charges, order.strategy_run_id, order.source.value)
             self.t.audit.record("ORDER_PARTIAL_FILL" if filled_qty < order.quantity else "ORDER_FILLED", order.model_dump(mode="json"), "reconciler")

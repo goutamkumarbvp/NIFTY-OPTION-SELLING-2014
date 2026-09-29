@@ -139,9 +139,27 @@ class MarketDataProcessor:
         st = self.symbols.get(symbol)
         return st.last if st else None
 
-    def candles(self, symbol: str, limit: int = 200) -> List[Candle]:
+    def candles(self, symbol: str, limit: int = 200, seconds: int | None = None) -> List[Candle]:
+        """Base candles (CANDLE_SECONDS) or, with `seconds`, candles rebuilt from raw ticks
+        (down to 1-second bars) — the tick buffer keeps the last 3600 updates per symbol."""
         st = self.symbols.get(symbol)
-        return st.all_candles()[-limit:] if st else []
+        if not st:
+            return []
+        if not seconds or seconds == self.candle_seconds:
+            return st.all_candles()[-limit:]
+        out: List[Candle] = []
+        cur: Candle | None = None
+        for t in st.ticks:
+            bucket = int(t.ts // seconds) * seconds
+            if cur is None or cur.ts != bucket:
+                if cur is not None:
+                    out.append(cur)
+                cur = Candle(ts=bucket, open=t.ltp, high=t.ltp, low=t.ltp, close=t.ltp, volume=1)
+            else:
+                cur.high, cur.low, cur.close, cur.volume = max(cur.high, t.ltp), min(cur.low, t.ltp), t.ltp, cur.volume + 1
+        if cur is not None:
+            out.append(cur)
+        return out[-limit:]
 
     def record_chain(self, chain: OptionChain) -> None:
         self.chain_cache[chain.underlying] = chain

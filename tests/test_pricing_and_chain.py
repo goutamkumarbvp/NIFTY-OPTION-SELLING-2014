@@ -5,6 +5,7 @@ from terminal.core.models import OptionType
 from terminal.market.chain import OptionChainBuilder
 from terminal.market.pricing import bs_greeks, bs_price, implied_vol
 from terminal.market.universe import Universe
+from tests.fakefeed import live_chain
 
 
 def test_black_scholes_put_call_parity():
@@ -35,7 +36,10 @@ def test_expiry_calendar():
 
 def test_chain_structure(tmp_path):
     u = Universe(tmp_path, ["NSE"]).get("NIFTY")
-    ch = OptionChainBuilder(seed=1).build(u, 24800, 13.0, "2026-10-06")
+    bare = OptionChainBuilder().build(u, 24800, 13.0, "2026-10-06")
+    assert bare.live_rows == 0 and bare.total_ce_oi == 0  # no broker quotes yet: model placeholders only, never synthetic OI
+    ch = live_chain(u, 24800, 13.0, "2026-10-06")
+    assert ch.live_rows == len(ch.rows) * 2
     assert ch.atm_strike == 24800
     assert len(ch.rows) >= 51 and len(ch.rows) % 2 == 1
     atm = ch.find(24800, OptionType.CE)

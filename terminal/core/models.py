@@ -126,6 +126,7 @@ class OptionQuote(BaseModel):
     oi: int
     oi_change: int
     volume: int
+    live: bool = False  # True when the price came from the broker feed (model price otherwise)
 
 
 class ChainRow(BaseModel):
@@ -151,6 +152,7 @@ class OptionChain(BaseModel):
     total_pe_oi: int
     iv_atm: float
     expected_move: float  # 1 sigma to expiry in points
+    live_rows: int = 0  # rows priced from broker quotes
 
     def find(self, strike: float, option_type: OptionType) -> OptionQuote | None:
         for r in self.rows:
@@ -193,6 +195,9 @@ class Order(BaseModel):
     broker_order_id: str | None = None
     charges: float = 0.0
     message: str = ""
+    arrival_price: float | None = None  # TCA: mid/LTP at submission
+    slippage_bps: float | None = None
+    latency_ms: float | None = None
 
     @property
     def quantity(self) -> int:
@@ -306,6 +311,9 @@ class RiskSnapshot(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     per_market_lots: Dict[str, int] = Field(default_factory=dict)
     trades_today: int = 0
+    stress_worst_loss: float = 0.0
+    stress_worst_scenario: str = ""
+    cluster_exposure: Dict[str, float] = Field(default_factory=dict)
     ts: float = Field(default_factory=now_ts)
 
 

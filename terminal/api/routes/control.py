@@ -58,13 +58,20 @@ async def get_mode(request: Request, user: dict = Depends(require("viewer"))):
 @router.post("/mode")
 async def set_mode(body: ModeBody, request: Request, user: dict = Depends(require("admin"))):
     t = terminal(request)
-    await t.set_mode(TerminalMode(body.mode.upper()), user["username"], body.reason)
+    mode = TerminalMode(body.mode.upper())
+    if mode == TerminalMode.AUTO and t.governance.requires_approval("mode_auto"):
+        res = await t.governance.submit("mode_auto", {"reason": body.reason}, user["username"])
+        return ok({"mode": t.mode.value, "pending_approval": res["request"]})
+    await t.set_mode(mode, user["username"], body.reason)
     return ok({"mode": t.mode.value})
 
 
 @router.post("/safety/gate")
 async def gate(body: GateBody, request: Request, user: dict = Depends(require("admin"))):
     t = terminal(request)
+    if body.open and t.governance.requires_approval("gate_open"):
+        res = await t.governance.submit("gate_open", {}, user["username"])
+        return ok({"safety_gate_open": t.risk.safety_gate_open, "pending_approval": res["request"]})
     t.risk.set_gate(body.open, user["username"])
     return ok({"safety_gate_open": t.risk.safety_gate_open})
 

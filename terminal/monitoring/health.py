@@ -64,6 +64,8 @@ class HealthMonitor:
         self.set("council", (time.time() - t.council.last_cycle_ts) < t.settings.agent_cycle_seconds * 4 if t.council.last_cycle_ts else True, f"cycle {t.council.cycle}")
         self.set("risk", t.risk.snapshot.level.value != "HALTED", t.risk.snapshot.level.value)
         self.set("database", True, str(t.db.path.name))
+        g = t.guardian
+        self.set("guardian", g.enabled and (not g.last_scan_ts or (time.time() - g.last_scan_ts) < g.interval * 4), f"{g.scans} scans · {len(g.pending())} awaiting permission · {g.healed} healed" if g.enabled else "disabled")
         self.set("audit", True, f"{t.audit.count} records")
         return {"uptime_seconds": round(time.time() - self.started), "cpu_pct": self.cpu_pct, "memory": self.memory(), "disk": self.disk(), "python": platform.python_version(),
                 "services": self.services, "feed": t.feed.status(), "broker": t.broker.status(), "websocket_clients": len(t.ws_clients), "loop_lag_ms": t.loop_lag_ms}

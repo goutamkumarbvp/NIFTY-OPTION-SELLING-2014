@@ -91,9 +91,11 @@ async def test_daily_loss_halt(terminal):
     t = terminal
     plan = t.strategies.make_plan("short_straddle", "NIFTY", 1)
     run = await t.strategies.deploy(plan, "tester", OrderSource.MANUAL)
-    # isolate the risk-manager path from the Sentinel's protective exit
+    # isolate the risk-manager path from the Sentinel's protective exit and from the per-trade
+    # stop-loss, which now re-evaluates on every option tick and would otherwise win the race
     t.paused = True
-    # force a catastrophic mark-to-market by shocking the simulated spot
+    run.stop_loss_pct = 100000.0
+    # force a catastrophic mark-to-market by shocking the scripted test feed
     t.risk.update_limits({"max_daily_loss": 500}, "operator")
     t.feed.shock("NIFTY", 6.0)
     for _ in range(40):

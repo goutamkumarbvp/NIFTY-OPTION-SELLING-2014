@@ -110,7 +110,20 @@ class TelegramCommands:
                 return "Usage: /mode manual | /mode auto"
             await t.set_mode(TerminalMode(arg.upper()), actor, reason="telegram")
             return f"Mode → {t.mode.value}."
+        if cmd == "/heal":
+            g = t.guardian
+            if arg in ("approve", "reject") and len(parts) > 2:
+                inc_id = parts[2]
+                try:
+                    inc = await g.approve(inc_id, actor) if arg == "approve" else g.reject(inc_id, actor, "telegram")
+                except (KeyError, ValueError) as exc:
+                    return f"Guardian: {exc}"
+                return f"Guardian {inc.symptom}: {inc.status}" + (f" — {inc.result}" if inc.result else "")
+            pend = g.pending()
+            if not pend:
+                return f"Guardian: no remedies awaiting permission · {g.scans} scans · {g.healed} healed · policy {g.auto_apply}"
+            return "Guardian remedies awaiting your permission:\n" + "\n".join(f"{i.id} · {i.symptom} → {i.remedy_label} [{i.risk}]\n  /heal approve {i.id}  |  /heal reject {i.id}" for i in pend[:8])
         if cmd == "/ask" and len(parts) > 1:
             res = await t.copilot.chat(" ".join(parts[1:]), actor)
             return res["answer"][:3500]
-        return "Commands: /status /pnl /positions /runs /pause /resume /kill confirm /gate open|close /mode manual|auto /ask <question>"
+        return "Commands: /status /pnl /positions /runs /pause /resume /kill confirm /gate open|close /mode manual|auto /heal [approve|reject <id>] /ask <question>"
