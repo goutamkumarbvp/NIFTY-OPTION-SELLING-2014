@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     chain_strikes_each_side: int = Field(10, alias="AMRT_CHAIN_STRIKES_EACH_SIDE")
     chain_poll_seconds: float = Field(5.0, alias="AMRT_CHAIN_POLL_SECONDS")
     replay_file: str = Field("", alias="AMRT_REPLAY_FILE")             # labelled HISTORICAL REPLAY when set
+    simulated_market: bool = Field(False, alias="AMRT_SIMULATED_MARKET")  # SIMULATED data for PAPER_ONLY demos; refused when LIVE_CAPABLE
+    events_calendar_file: str = Field("", alias="AMRT_EVENTS_CALENDAR_FILE")
 
     # --- loops ---------------------------------------------------------------
     risk_monitor_seconds: float = Field(1.0, alias="AMRT_RISK_MONITOR_SECONDS")

@@ -206,6 +206,22 @@ class MarketDataHub:
         cands = [s for (u, _), s in self.chains.items() if u == underlying]
         return min(cands, key=lambda s: s.expiry) if cands else None
 
+    def chain_label(self, snap: ChainSnapshot | None, max_age_ms: float) -> DataLabel:
+        """Effective label of a chain snapshot, by the same rules as quotes."""
+        if snap is None:
+            return DataLabel.UNAVAILABLE
+        if snap.label in (DataLabel.HISTORICAL_REPLAY, DataLabel.SIMULATED):
+            return snap.label
+        if (self.clock.ts() - snap.ts) * 1000.0 > max_age_ms:
+            return DataLabel.UNAVAILABLE
+        src = self.sources.get(snap.source.split(":")[0])
+        if src is not None and src.live and src.authenticated and src.connected and (src.drift_ms is None or abs(src.drift_ms) <= self.max_drift_ms):
+            return DataLabel.LIVE_VERIFIED
+        return DataLabel.LIVE_UNVERIFIED
+
+    def history(self, underlying: str, expiry: str) -> list[ChainSnapshot]:
+        return list(self.chain_history.get((underlying, expiry), ()))
+
     def chain_age_ms(self, underlying: str) -> float | None:
         s = self.chain(underlying)
         return None if s is None else (self.clock.ts() - s.ts) * 1000.0

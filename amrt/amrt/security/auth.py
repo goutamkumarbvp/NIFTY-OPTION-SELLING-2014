@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import secrets
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 import pyotp
@@ -52,6 +53,8 @@ class AuthService:
         self.lockout_seconds = lockout_minutes * 60
         self.sessions: dict[str, Session] = {}
         self._setup_code_hash: str | None = None
+        self.failures: deque[float] = deque(maxlen=1000)
+        self.lockouts: deque[float] = deque(maxlen=200)
 
     # --------------------------------------------------------------- users
     def user_count(self) -> int:
@@ -103,6 +106,7 @@ class AuthService:
         now = self._ts()
         if row is None or row.disabled:
             hash_password(password, "00" * 16)  # equalise timing
+            self.failures.append(now)
             raise AuthenticationRequired("invalid credentials")
         if row.locked_until > now:
             raise AuthenticationRequired("account locked", locked_until=row.locked_until)
@@ -111,6 +115,9 @@ class AuthService:
             locked = now + self.lockout_seconds if fails >= self.lockout_attempts else 0.0
             with self.db.tx() as conn:
                 conn.execute(users.update().where(users.c.username == username).values(failed_count=0 if locked else fails, locked_until=locked))
+            self.failures.append(now)
+            if locked:
+                self.lockouts.append(now)
             raise AuthenticationRequired("invalid credentials")
         with self.db.tx() as conn:
             conn.execute(users.update().where(users.c.username == username).values(failed_count=0, locked_until=0.0))
@@ -142,6 +149,14 @@ class AuthService:
     def require_step_up(self, s: Session) -> None:
         if self._ts() - s.step_up_at > self.step_up_ttl:
             raise StepUpRequired("re-enter your password to confirm this action")
+
+    def recent_failures(self, window_s: float = 900.0) -> int:
+        cut = self._ts() - window_s
+        return sum(1 for t in self.failures if t >= cut)
+
+    def recent_lockouts(self, window_s: float = 900.0) -> int:
+        cut = self._ts() - window_s
+        return sum(1 for t in self.lockouts if t >= cut)
 
     def describe(self) -> dict:
         return {"users": self.user_count(), "active_sessions": len(self.sessions), "setup_pending": self._setup_code_hash is not None,

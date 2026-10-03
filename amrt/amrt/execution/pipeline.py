@@ -81,7 +81,8 @@ class RiskContextBuilder:
             clock_drift_ms=src.drift_ms if src else None, orders_last_minute=self.book.orders_since(intent.account_id, self.clock.ts() - 60),
             funds=funds, est_margin_for_intent=estimate_option_margin(intent.side, intent.quantity, spot, ref) if not intent.reduce_only else 0.0,
             automation=auto[0] if auto else None, automation_meta=auto[1] if auto else None,
-            master_healthy=crit.get("master_agent") in USABLE_HEALTH, same_underlying_positions=same)
+            master_healthy=crit.get("master_agent") in USABLE_HEALTH, same_underlying_positions=same,
+            allow_simulated=bool(self.settings.simulated_market) and not self.settings.live_capable)
 
 
 class OrderPipeline:
@@ -102,6 +103,46 @@ class OrderPipeline:
                            limit_price=limit_price, product=product, validity=validity, purpose=purpose, reduce_only=reduce_only, origin=origin,
                            authorization=authorization, decision_id=decision_id, strategy_id=strategy_id, strategy_version=strategy_version,
                            correlation_id=correlation_id, idempotency_key=key, expires_at=now + INTENT_TTL, note=note)
+
+    def precheck_structure(self, account_id: str, action: dict) -> dict:
+        """Non-binding kernel evaluation of every leg of a proposed structure, in execution order (hedges first).
+
+        Later legs are evaluated as if earlier legs had filled (their positions are added to the context);
+        authorization (RK-008) is not judged here because it is granted later by the owner or the automation policy.
+        Nothing is persisted or sent.
+        """
+        from dataclasses import replace
+
+        from amrt.core.enums import AuthorizationKind, OrderPurpose, OrderType, Origin, Side
+        acct = self.builder.accounts.get(account_id)
+        mode = self.builder.mode_ctl.mode
+        now = self.clock.ts()
+        auth = AuthorizationContext(kind=AuthorizationKind.OWNER_APPROVAL, approved_by="precheck", approval_id="precheck", step_up_at=now, approved_at=now)
+        legs = sorted(action["legs"], key=lambda leg_: 0 if leg_["side"] == "BUY" else 1)
+        hypo: list[dict] = []
+        extra_lots = 0
+        out, failed = [], []
+        for i, leg in enumerate(legs):
+            otype = OrderType(leg.get("order_type", "LIMIT"))
+            intent = self.make_intent(account_id=account_id, broker=acct.broker, mode=mode, instrument_key=leg["instrument_key"], side=Side(leg["side"]),
+                                      lots=int(leg["lots"]), order_type=otype, limit_price=leg.get("limit_price") if otype == OrderType.LIMIT else None,
+                                      purpose=OrderPurpose(leg.get("purpose", "ENTRY")), reduce_only=bool(leg.get("reduce_only", False)), origin=Origin.OWNER_MANUAL,
+                                      authorization=auth, correlation_id="precheck", idem_parts=("precheck", i))
+            ctx = self.builder.build(intent)
+            ctx = replace(ctx, same_underlying_positions=ctx.same_underlying_positions + hypo,
+                          valuation={**ctx.valuation, "open_lots": ctx.valuation.get("open_lots", 0) + extra_lots})
+            d = self.kernel.evaluate(intent, ctx)
+            bad = [r for r in d.rules if r.applicable and not r.passed and r.rule_id not in ("RK-008",)]
+            out.append({"instrument_key": leg["instrument_key"], "side": leg["side"], "lots": leg["lots"], "approved": not bad,
+                        "failed_rules": [f"{r.rule_id} {r.name}: {r.detail}" for r in bad]})
+            failed += [f"leg {i + 1} {r.rule_id} {r.name}: {r.detail}" for r in bad]
+            inst = self.instruments.get(leg["instrument_key"])
+            if inst.option_type is not None and not leg.get("reduce_only"):
+                signed = intent.quantity if intent.side == Side.BUY else -intent.quantity
+                hypo.append({"option_type": inst.option_type.value, "expiry": inst.expiry.isoformat(), "net_qty": signed})
+                extra_lots += int(leg["lots"])
+        return {"approved": not failed, "legs": out, "failed": failed, "policy_label": d.policy_label if legs else None,
+                "note": "non-binding: every order is evaluated again by the Risk Kernel at submission; authorization is checked then"}
 
     def precheck(self, intent: OrderIntent) -> dict:
         """Non-binding evaluation for decision packages (nothing is persisted or sent)."""

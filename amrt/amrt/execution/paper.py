@@ -27,7 +27,8 @@ PAPER_LABEL = DataLabel.SIMULATED
 class PaperVenue(Venue):
     kind = "PAPER"
 
-    def __init__(self, account_id: str, hub, gateway_verifier, clock, capital: float, slippage_bps: float = 5.0, max_quote_age_ms: float = 5000) -> None:
+    def __init__(self, account_id: str, hub, gateway_verifier, clock, capital: float, slippage_bps: float = 5.0, max_quote_age_ms: float = 5000,
+                 allow_simulated: bool = False) -> None:
         self.name = "paper"
         self.account_id = account_id
         self.hub = hub
@@ -35,6 +36,7 @@ class PaperVenue(Venue):
         self.capital = capital
         self.slippage_bps = slippage_bps
         self.max_quote_age_ms = max_quote_age_ms
+        self.allow_simulated = allow_simulated
         self.checker = TicketChecker(gateway_verifier, "PAPER", clock.ts)
         self._ids = itertools.count(1)
         self.book: dict[str, dict] = {}
@@ -43,7 +45,8 @@ class PaperVenue(Venue):
 
     def _quote(self, key: str):
         q = self.hub.quote(key, self.max_quote_age_ms)
-        if q.label not in (DataLabel.LIVE_VERIFIED, DataLabel.LIVE_UNVERIFIED, DataLabel.HISTORICAL_REPLAY):
+        ok = {DataLabel.LIVE_VERIFIED, DataLabel.LIVE_UNVERIFIED, DataLabel.HISTORICAL_REPLAY} | ({DataLabel.SIMULATED} if self.allow_simulated else set())
+        if q.label not in ok:
             raise DataUnavailable("DATA UNAVAILABLE", reason=f"label {q.label}")
         return q
 

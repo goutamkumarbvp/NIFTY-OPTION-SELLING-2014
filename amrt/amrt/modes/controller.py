@@ -29,6 +29,7 @@ class ModeController:
         self.since = clock.ts()
         self.changed_by = "startup"
         self.paper_auto_approve = False
+        self.paper_auto_by: str | None = None
         self.history: list[dict] = list((prev or {}).get("history", []))[-50:]
         if prev and prev.get("mode") and prev["mode"] != Mode.PAPER.value:
             events.append("MODE_RESET_ON_STARTUP", {"previous_mode": prev["mode"], "now": "PAPER", "rule": "startup never restores a live mode"}, system_principal)
@@ -90,4 +91,5 @@ class ModeController:
     def set_paper_auto_approve(self, principal: Principal, on: bool) -> None:
         require(principal, Capability.APPROVE_ACTION, "paper auto-approve")
         self.paper_auto_approve = bool(on)
+        self.paper_auto_by = principal.id if on else None
         self.events.append("PAPER_AUTO_APPROVE", {"on": self.paper_auto_approve, "scope": "PAPER accounts only"}, principal)

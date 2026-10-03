@@ -66,6 +66,11 @@ class OrderBook:
             row = conn.execute(select(orders).where(orders.c.intent_id == intent_id)).first()
         return dict(row._mapping) if row else None
 
+    def by_client_tag(self, tag: str) -> dict | None:
+        with self.db.engine.connect() as conn:
+            row = conn.execute(select(orders).where(orders.c.client_tag == tag)).first()
+        return dict(row._mapping) if row else None
+
     def by_idempotency_key(self, key: str) -> dict | None:
         with self.db.engine.connect() as conn:
             row = conn.execute(select(orders).where(orders.c.idempotency_key == key)).first()

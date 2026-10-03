@@ -103,6 +103,7 @@ class RiskContext:
     automation_meta: dict | None = None
     master_healthy: bool = False
     same_underlying_positions: list[dict] = field(default_factory=list)   # [{option_type, expiry, net_qty}]
+    allow_simulated: bool = False             # PAPER only, PAPER_ONLY deployments with AMRT_SIMULATED_MARKET
 
     def digest(self) -> str:
         d = {k: v for k, v in self.__dict__.items() if k not in ("policy", "hard", "automation")}
@@ -221,6 +222,8 @@ class RiskKernel:
         # data integrity
         max_age = pol.max_data_age_ms
         good_labels = {DataLabel.LIVE_VERIFIED} if live else {DataLabel.LIVE_VERIFIED, DataLabel.LIVE_UNVERIFIED, DataLabel.HISTORICAL_REPLAY}
+        if not live and c.account_kind == "PAPER" and c.allow_simulated and not c.live_capable:
+            good_labels = good_labels | {DataLabel.SIMULATED}
         inst_fresh = c.instrument_age_ms is not None and c.instrument_age_ms <= max_age and c.instrument_label in good_labels
         und_fresh = c.underlying_age_ms is not None and c.underlying_age_ms <= max_age and c.underlying_label in good_labels
         needs_fresh = new or it.order_type == OrderType.LIMIT

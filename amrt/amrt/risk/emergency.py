@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from amrt.core.errors import NotReady, PermissionDenied
-from amrt.security.identity import Capability, Principal, require
+from amrt.security.identity import Capability, Principal, PrincipalKind, require
 
 STATE_KEY = "safety_state"
 LEVELS = ["NONE", "LEVEL1", "LEVEL2"]
@@ -84,6 +84,30 @@ class SafetyState:
             finally:
                 self._event("KILL_SWITCH_ENGAGED", info, principal)
         return info
+
+    def engage_file_switch(self, principal: Principal, reason: str) -> dict:
+        """Switch B only, with no database or lock access — for the watchdog when the process may be wedged.
+        The database switch is aligned from the file on the next startup or sync_from_file()."""
+        require(principal, Capability.ENGAGE_KILL_SWITCH, "engage kill switch B")
+        info = {"engaged": True, "by": principal.id, "kind": principal.kind.value, "at": self._ts(), "reason": reason, "variant": "FREEZE", "switch": "B"}
+        self._write_kill_file(info)
+        return info
+
+    def sync_from_file(self) -> bool:
+        """Latch switch A when switch B was engaged out-of-band (watchdog, external process, operator touching the file)."""
+        if not self.kill_file_engaged() or self.state["kill_switch"].get("engaged"):
+            return False
+        try:
+            info = json.loads(self.kill_file.read_text() or "{}")
+        except (OSError, ValueError):
+            info = {}
+        with self._lock:
+            self.state["kill_switch"] = {"engaged": True, "by": info.get("by", "kill-file"), "at": info.get("at", self._ts()),
+                                         "reason": info.get("reason", "kill file present"), "variant": "FREEZE"}
+            self._add_freeze("KILL_SWITCH", Principal.of(PrincipalKind.WATCHDOG, "kill-file"), self.state["kill_switch"]["reason"])
+            self._save("kill-file")
+        self._event("KILL_SWITCH_ENGAGED", {**self.state["kill_switch"], "source": "file"}, Principal.of(PrincipalKind.WATCHDOG, "kill-file"))
+        return True
 
     def release_kill(self, principal: Principal, verification: dict) -> None:
         require(principal, Capability.RELEASE_KILL_SWITCH, "release kill switch")
