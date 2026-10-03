@@ -1,0 +1,8 @@
+# Official broker SDKs (install only the brokers you use)
+kotakneoapi==3.0.6
+kiteconnect>=5.0
+smartapi-python>=1.5
+logzero
+websocket-client
+upstox-python-sdk>=2.0
+growwapi>=1.0
