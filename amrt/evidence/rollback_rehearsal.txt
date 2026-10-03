@@ -1,0 +1,27 @@
+== 1. release 2d0d62b672aa0338546b26781ef296fed33734d6: migrate + seed
+{"applied": [1, 2], "schema_version": 2}
+events 50
+== 2. pre-upgrade backup
+  "ok": true,
+  "path": "/tmp/claude-0/-home-user-NIFTY-OPTION-SELLING-2014/7be0a55d-5c8e-5f30-a46e-a73f642eeda9/scratchpad/rehearsal/rt/backups/amrt-20261003T112301Z.sqlite3.gz",
+== 3. 'upgrade': new commit + new data written
+events after upgrade 58
+== 4. rollback to 2d0d62b672aa0338546b26781ef296fed33734d6 with /tmp/claude-0/-home-user-NIFTY-OPTION-SELLING-2014/7be0a55d-5c8e-5f30-a46e-a73f642eeda9/scratchpad/rehearsal/rt/backups/amrt-20261003T112301Z.sqlite3.gz
+[rollback] make sure the application is stopped (docker compose stop app  /  Ctrl+C)
+  "ok": true,
+  "schema_version": 2,
+  "code_schema_version": 2,
+    "ok": true,
+  "restored": true,
+  "ok": true,
+  "schema_version": 2,
+  "code_schema_version": 2,
+    "ok": true,
+[rollback] code at 2d0d62b, data restored from /tmp/claude-0/-home-user-NIFTY-OPTION-SELLING-2014/7be0a55d-5c8e-5f30-a46e-a73f642eeda9/scratchpad/rehearsal/rt/backups/amrt-20261003T112301Z.sqlite3.gz. Start the app: it always starts in PAPER mode.
+== 5. post-rollback state
+2d0d62b rehearsal: candidate release
+events 50 POST_UPGRADE present: False chain: True
+== 6. corrupt backup is refused
+refused (exit 1) — live database untouched
+  "ok": true,
+    "ok": true,

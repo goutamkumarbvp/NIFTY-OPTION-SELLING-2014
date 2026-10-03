@@ -1,0 +1,11 @@
+== PG: migrate+seed
+{"applied": [1, 2], "schema_version": 2}
+events 40
+== PG: backup (pg_dump)
+  "ok": true,
+  "bytes": 42521,
+events 42
+== PG: restore (pg_restore --clean)
+  "schema_version": 2,
+  "restored": true
+events 40 chain True POST_BACKUP present: False

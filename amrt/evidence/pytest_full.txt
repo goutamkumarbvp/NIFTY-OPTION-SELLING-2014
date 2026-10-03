@@ -93,4 +93,4 @@ amrt/storage/db.py                   119      5    96%
 ------------------------------------------------------
 TOTAL                               7624   1621    79%
 Coverage XML written to file evidence/coverage.xml
-116 passed in 21.34s
+116 passed in 19.52s

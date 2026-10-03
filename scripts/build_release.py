@@ -15,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 NAME = "NIFTY_AI_OPTIONS_TERMINAL_V30"
+AMRT_NAME = "AI_MARKET_RISK_TERMINAL_AMRT"
 
 
 def main() -> int:
@@ -29,12 +30,21 @@ def main() -> int:
             if not m.isfile():
                 continue
             rel = m.name[len(NAME) + 1:]
-            if rel.startswith(("legacy/", "runtime/")) or rel.endswith(".pyc") or "__pycache__" in rel or rel == ".env":
+            if rel.startswith(("legacy/", "runtime/")) or rel.endswith(".pyc") or "__pycache__" in rel or rel == ".env" or rel.endswith("/.env"):
                 continue
             z.writestr(m.name, tar.extractfile(m).read())
         if quick:
             z.writestr(f"{NAME}/QUICK_START.txt", quick)
     print(f"wrote {zpath} ({zpath.stat().st_size // 1024} KB) from {sha}")
+    # standalone AI Market Risk Terminal package (amrt/ only)
+    apath = out_dir / f"{AMRT_NAME}.zip"
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tar, zipfile.ZipFile(apath, "w", zipfile.ZIP_DEFLATED) as z:
+        for m in tar.getmembers():
+            rel = m.name[len(NAME) + 1:]
+            if not m.isfile() or not rel.startswith("amrt/") or rel.endswith((".pyc", "/.env")) or "__pycache__" in rel:
+                continue
+            z.writestr(f"{AMRT_NAME}/{rel[len('amrt/'):]}", tar.extractfile(m).read())
+    print(f"wrote {apath} ({apath.stat().st_size // 1024} KB) from {sha}")
     return 0
 
 
