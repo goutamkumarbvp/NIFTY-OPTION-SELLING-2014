@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     port: int = Field(8700, alias="AMRT_PORT")
     log_format: str = Field("text", alias="AMRT_LOG_FORMAT")
     allowed_origins: str = Field("", alias="AMRT_ALLOWED_ORIGINS")
+    cookie_secure: bool = Field(False, alias="AMRT_COOKIE_SECURE")      # set true behind HTTPS
+    static_dir: str = Field("", alias="AMRT_STATIC_DIR")               # dashboard build (default: ../frontend/out)
     session_ttl_minutes: int = Field(480, alias="AMRT_SESSION_TTL_MINUTES")
     step_up_ttl_seconds: int = Field(300, alias="AMRT_STEP_UP_TTL_SECONDS")
     login_lockout_attempts: int = Field(5, alias="AMRT_LOGIN_LOCKOUT_ATTEMPTS")

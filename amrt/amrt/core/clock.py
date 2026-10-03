@@ -43,6 +43,12 @@ class ManualClock(Clock):
         self._now += dt.timedelta(seconds=seconds)
         self._mono += seconds
 
+    def set(self, when: dt.datetime) -> None:
+        """Jump to an absolute time (forward or backward); monotonic time only moves forward."""
+        delta = (when - self._now).total_seconds()
+        self._now = when.astimezone(UTC) if when.tzinfo else when.replace(tzinfo=UTC)
+        self._mono += abs(delta)
+
     def set_ist(self, hh: int, mm: int, ss: int = 0) -> None:
         cur = self._now.astimezone(IST)
         target = cur.replace(hour=hh, minute=mm, second=ss, microsecond=0)
