@@ -123,7 +123,12 @@ def payoff_profile(legs: List[Leg], spot: float, lot_size: int, points: int = 61
     mids = [payoff_at(legs, s, lot_size) for s in strikes]
     max_profit = max(mids + ends + ys)
     max_loss = min(mids + ends + ys)
-    unlimited = any(abs(e) > 5 * max(abs(max_profit), 1) for e in ends)
+    # undefined risk = some option type is net short (more units sold than bought); a ratio
+    # heuristic on the payoff ends mislabels narrow-credit spreads close to expiry
+    net = {}
+    for leg in legs:
+        net[leg.option_type] = net.get(leg.option_type, 0) + (leg.lots if leg.side == Side.BUY else -leg.lots)
+    unlimited = any(v < 0 for v in net.values())
     return {"x": [round(x, 1) for x in xs], "y": [round(y, 1) for y in ys], "breakevens": bes, "max_profit": round(max_profit, 1), "max_loss": round(max_loss, 1), "undefined_risk": unlimited}
 
 
