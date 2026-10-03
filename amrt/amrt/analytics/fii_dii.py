@@ -70,7 +70,7 @@ def parse_participant_oi(raw: str, file_date: dt.date | None = None, tolerance: 
     date = file_date
     start = 0
     if rows[0] and "participant" in rows[0][0].lower():
-        date = _date_from_title(rows[0][0]) or date
+        date = _date_from_title(",".join(rows[0])) or date      # the title may be unquoted: "... as on Oct 03, 2026"
         start = 1
     if date is None:
         raise ParseError("publication date not found in title and not supplied")

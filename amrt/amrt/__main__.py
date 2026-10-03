@@ -2,6 +2,10 @@
 
     python -m amrt              # serve (default)
     python -m amrt preflight    # print the effective (redacted) configuration and readiness, then exit
+    python -m amrt migrate      # apply database migrations
+    python -m amrt verify       # verify schema version and the audit hash chain
+    python -m amrt backup       # take a backup now (runtime/backups)
+    python -m amrt restore FILE # restore a backup (the current database is copied aside first)
 """
 from __future__ import annotations
 
@@ -46,6 +50,8 @@ def main(argv: list[str]) -> int:
     if argv[:1] == ["preflight"]:
         print(json.dumps({k: v for k, v in pf.items() if k != "settings"}, indent=2))
         return 1 if pf["problems"] else 0
+    if argv[:1] in (["migrate"], ["verify"], ["backup"], ["restore"]):
+        return ops_command(s, argv)
     if pf["problems"]:
         for p in pf["problems"]:
             print(f"FATAL: {p}", file=sys.stderr)
@@ -61,6 +67,39 @@ def main(argv: list[str]) -> int:
     print(f"AMRT {pf['environment']} — dashboard on http://{s.bind_host}:{s.port}  (startup mode is always PAPER)")
     uvicorn.run(api, host=s.bind_host, port=s.port, log_level="info", proxy_headers=False, server_header=False)
     return 0
+
+
+def ops_command(s: Settings, argv: list[str]) -> int:
+    from amrt import ops
+    from amrt.storage.db import Database
+    cmd = argv[0]
+    if cmd == "migrate":
+        db = Database(s.db_url)
+        print(json.dumps({"applied": db.migrate(), "schema_version": db.schema_version()}))
+        return 0
+    if cmd == "verify":
+        res = ops.verify_database(s.db_url)
+        print(json.dumps(res, indent=2, default=str))
+        return 0 if res["ok"] else 1
+    if cmd == "backup":
+        from amrt.core.clock import Clock
+        from amrt.events.store import EventStore
+        from amrt.security.identity import Principal, PrincipalKind
+        from amrt.services import BackupService
+        db = Database(s.db_url)
+        db.migrate()
+        res = BackupService(db, s, EventStore(db), Clock()).run(Principal.of(PrincipalKind.OPERATOR, "cli"), "cli")
+        print(json.dumps(res, indent=2, default=str))
+        return 0 if res["ok"] else 1
+    if len(argv) < 2:
+        print("usage: python -m amrt restore <backup file>", file=sys.stderr)
+        return 2
+    if s.db_url.startswith("sqlite"):
+        res = ops.restore_sqlite(argv[1], s.db_url.split("///", 1)[1])
+    else:
+        res = ops.restore_postgres(argv[1], s.db_url)
+    print(json.dumps(res, indent=2, default=str))
+    return 0 if res.get("restored") else 1
 
 
 if __name__ == "__main__":

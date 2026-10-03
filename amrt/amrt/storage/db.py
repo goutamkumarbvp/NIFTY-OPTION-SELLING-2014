@@ -167,8 +167,34 @@ def _m1(conn: Connection, dialect: str) -> None:
         conn.execute(event_chain_head.insert().values(id=1, seq=0, hash="0" * 64))
 
 
+# tables whose rows may never be removed (incidents may still change status; the others are fully immutable)
+NO_DELETE = ("incidents", "recovery_actions", "decisions")
+NO_UPDATE = ("recovery_actions", "decisions")
+
+
+def _m2(conn: Connection, dialect: str) -> None:
+    """Incidents and recovery records cannot be deleted (incidents can never be suppressed);
+    TRUNCATE is blocked on every protected table, including the event log (PostgreSQL)."""
+    if dialect == "postgresql":
+        conn.execute(text("CREATE OR REPLACE FUNCTION amrt_protected() RETURNS trigger AS $$ BEGIN "
+                          "RAISE EXCEPTION 'table % is protected: % not allowed', TG_TABLE_NAME, TG_OP; END $$ LANGUAGE plpgsql;"))
+        for t in NO_DELETE:
+            ops = "UPDATE OR DELETE" if t in NO_UPDATE else "DELETE"
+            conn.execute(text(f"DROP TRIGGER IF EXISTS {t}_protected ON {t};"))
+            conn.execute(text(f"CREATE TRIGGER {t}_protected BEFORE {ops} ON {t} FOR EACH ROW EXECUTE FUNCTION amrt_protected();"))
+        for t in ("events",) + NO_DELETE:
+            conn.execute(text(f"DROP TRIGGER IF EXISTS {t}_no_truncate ON {t};"))
+            conn.execute(text(f"CREATE TRIGGER {t}_no_truncate BEFORE TRUNCATE ON {t} FOR EACH STATEMENT EXECUTE FUNCTION amrt_protected();"))
+    else:
+        for t in NO_DELETE:
+            for op in (("UPDATE", "DELETE") if t in NO_UPDATE else ("DELETE",)):
+                conn.execute(text(f"CREATE TRIGGER IF NOT EXISTS {t}_no_{op.lower()} BEFORE {op} ON {t} "
+                                  f"BEGIN SELECT RAISE(ABORT, '{t} is protected: {op} not allowed'); END;"))
+
+
 MIGRATIONS: list[tuple[int, str, Any]] = [
     (1, "initial schema, append-only events, chain head", _m1),
+    (2, "protect incidents, recovery actions and decisions; block TRUNCATE", _m2),
 ]
 
 

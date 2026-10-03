@@ -478,7 +478,7 @@ def create_api(app, static_dir: str | Path | None = None, start_loops: bool = Tr
     @api.post("/api/policies")
     def policy_propose(body: PolicyBody, sess: Session = Depends(stepped)):
         model = RiskPolicy.model_validate(body.body) if body.kind == "risk" else AutomationPolicy.model_validate(body.body)
-        return _json(app.policies.propose(body.kind, model, sess.principal, body.note))
+        return _json(app.policies.propose(body.kind.upper(), model, sess.principal, body.note))
 
     @api.post("/api/policies/{policy_id}/activate")
     def policy_activate(policy_id: str, sess: Session = Depends(stepped)):
