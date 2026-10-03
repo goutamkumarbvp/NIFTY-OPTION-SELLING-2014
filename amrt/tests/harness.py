@@ -38,6 +38,7 @@ def env(monkeypatch, tmp_path: Path, **extra: str) -> None:
             "AMRT_ENVIRONMENT": "PAPER_ONLY", "AMRT_LIVE_ORDERS_ENABLED": "false", "AMRT_SIMULATED_MARKET": "false", "AMRT_DATA_BROKER": "",
             "AMRT_REPLAY_FILE": "", "AMRT_LLM_ENABLED": "false"}
     base.update(extra)
+    monkeypatch.setitem(Settings.model_config, "env_file", None)     # never read a developer's real .env during tests
     for k, v in base.items():
         monkeypatch.setenv(k, v)
     for k in ("NEO_CONSUMER_KEY", "ZERODHA_API_KEY", "ANGEL_API_KEY", "UPSTOX_ACCESS_TOKEN", "GROWW_API_KEY", "GROWW_ACCESS_TOKEN"):

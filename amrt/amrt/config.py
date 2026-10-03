@@ -33,7 +33,7 @@ class HardLimits(BaseModel):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", populate_by_name=True)
+    model_config = SettingsConfigDict(env_file=("../.env", ".env"), env_file_encoding="utf-8", extra="ignore", populate_by_name=True)
 
     # --- deployment ---------------------------------------------------------
     environment: Environment = Field(Environment.PAPER_ONLY, alias="AMRT_ENVIRONMENT")

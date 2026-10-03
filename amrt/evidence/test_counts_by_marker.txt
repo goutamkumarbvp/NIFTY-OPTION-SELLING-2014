@@ -1,0 +1,10 @@
+unit 50
+integration 4
+contract 5
+security 5
+quant 17
+e2e 7
+chaos 9
+recovery 3
+replay 3
+acceptance 91
