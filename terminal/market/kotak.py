@@ -28,7 +28,9 @@ log = logging.getLogger("terminal.kotak")
 # Kotak "cash" segments carry the indices; F&O segments carry options / futures.
 INDEX_SEGMENT = {Exchange.NSE: "nse_cm", Exchange.BSE: "bse_cm", Exchange.MCX: "mcx_fo"}
 FO_SEGMENT = {Exchange.NSE: "nse_fo", Exchange.BSE: "bse_fo", Exchange.MCX: "mcx_fo"}
-CHAIN_EXCHANGE = {Exchange.NSE: "NSE", Exchange.BSE: "BSE", Exchange.MCX: "MCX"}
+# neo_api_client 3.x expiries()/option_chain() take the F&O *segment* ("nse_fo", "bse_fo", "mcx_fo"),
+# not the exchange name; "NSE"/"BSE"/"MCX" is rejected with HTTP 400 "Invalid or missing segment".
+CHAIN_EXCHANGE = dict(FO_SEGMENT)
 
 # Candidate index names as they appear in Kotak's scrip master (first match wins).
 INDEX_NAMES: Dict[str, List[str]] = {

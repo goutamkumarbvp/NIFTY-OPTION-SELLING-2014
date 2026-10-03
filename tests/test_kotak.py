@@ -68,3 +68,33 @@ def test_chain_builder_overlays_broker_quotes(tmp_path):
     ch = b.build(u, 24800, 13.0, "2026-10-06")
     q = next(r.ce for r in ch.rows if r.strike == 24800)
     assert q.ltp == 250.0 and q.oi == 4200000 and q.iv > 0  # IV solved from the live price
+
+
+def test_chain_requests_use_fo_segments_not_exchange_names():
+    """Kotak's watchlist/expiries and option-chain endpoints reject "NSE"/"MCX" with 400 Invalid or missing segment."""
+    from terminal.core.models import Exchange
+    from terminal.market.kotak import CHAIN_EXCHANGE
+    assert CHAIN_EXCHANGE == {Exchange.NSE: "nse_fo", Exchange.BSE: "bse_fo", Exchange.MCX: "mcx_fo"}
+
+
+async def test_kotak_session_sends_segment_to_expiries_and_option_chain(tmp_path):
+    from terminal.market.kotak import KotakNeoSession
+    from terminal.market.universe import Universe
+    from tests.conftest import make_settings
+    s = make_settings()
+    sess = KotakNeoSession(s, tmp_path)
+    calls = []
+
+    async def fake_call(name, **kw):
+        calls.append((name, kw))
+        if name == "expiries":
+            return {"data": ["2026-10-06", "2026-10-13"]}
+        return {"data": []}
+    sess._call = fake_call
+    u = Universe(tmp_path, ["NSE", "MCX"]).get("NIFTY")
+    await sess.option_chain(u, "2026-10-06")
+    m = Universe(tmp_path, ["NSE", "MCX"]).get("CRUDEOIL")
+    await sess.expiries(m)
+    assert ("expiries", {"exchange": "nse_fo", "underlying": "NIFTY"}) in calls
+    assert ("option_chain", {"exchange": "nse_fo", "underlying": "NIFTY", "expiry": "2026-10-06"}) in calls
+    assert ("expiries", {"exchange": "mcx_fo", "underlying": "CRUDEOIL"}) in calls
